@@ -36,7 +36,9 @@ import json
 import os
 import re
 import secrets
+import signal
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -58,7 +60,7 @@ from .jsonio import read_json, write_json, write_text_atomic
 from .license import require_vendor_public_key
 from .lock import FileLock, lock_is_held
 from .paths import Layout, install_root
-from .process_identity import is_descendant
+from .process_identity import descendant_pids, is_descendant, process_parents
 from .settings import load_settings
 from .subprocess_text import hidden_window_options
 
@@ -1063,7 +1065,13 @@ def start_agent(job: dict) -> subprocess.Popen:
     command = [str(part) for part in job["agent_command"]]
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in (job.get("agent_env") or {}).items()})
-    env["WINPORT_INSTANCE_TOKEN"] = secrets.token_hex(16)
+    token = secrets.token_hex(16)
+    env["WINPORT_INSTANCE_TOKEN"] = token
+    # Remember this launch's token in the journal.  If the new agent fails its
+    # post-restart checks, this is the proof that a marker in the data directory
+    # really belongs to the child tree we are about to stop, not a stale or
+    # unrelated process.
+    job["new_instance_token"] = token
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     log_path = update_dir(Layout(data=Path(job["data"]))) / "supervisor.out"
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1080,24 +1088,209 @@ def start_agent(job: dict) -> subprocess.Popen:
     return proc
 
 
-def _stop_process(proc, timeout: float = 10.0) -> None:
-    if proc is None or proc.poll() is not None:
-        return
+def _marker_instance_pids(job: dict) -> list[int]:
+    """Pids from a marker that provably belongs to the newly spawned agent."""
+    token = str(job.get("new_instance_token") or "")
+    if not token:
+        return []
+    marker = _read_marker(job)
+    if marker.get("instance") != token:
+        return []
+    if marker.get("version") != job.get("target_version"):
+        return []
+    owner_pid, agent_pid = _pid_evidence(marker)
+    return [pid for pid in (owner_pid, agent_pid) if pid]
+
+
+def _agent_lock_owner_pid(job: dict) -> int:
+    """Return the process currently holding the agent lock, or 0.
+
+    ``FileLock`` stamps the owner pid into the lock file.  This is the last
+    resort when the redirector already exited and no readiness marker was
+    written: only the real runtime child can hold this installation's
+    ``run/agent.lock``.
+    """
+    path = _agent_lock_path(job)
     try:
-        proc.terminate()
+        if not lock_is_held(path):
+            return 0
+        value = read_json(path, default={})
+        pid = int(value.get("pid") or 0) if isinstance(value, dict) else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+    return pid if pid > 0 else 0
+
+
+def _panel_address(job: dict) -> tuple[str, int]:
+    try:
+        parts = urllib.parse.urlsplit(str(job.get("health_url") or ""))
+        host = parts.hostname or ""
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            return "", 0
+        port = int(parts.port or (443 if parts.scheme == "https" else 80))
+        return host, port
+    except (TypeError, ValueError):
+        return "", 0
+
+
+def _panel_port_open(job: dict, *, timeout: float = 0.3) -> bool:
+    host, port = _panel_address(job)
+    if not host or not port:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
     except OSError:
-        pass
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and proc.poll() is None:
-        threading.Event().wait(0.2)
-    if proc.poll() is None:
+        return False
+
+
+def _wait_agent_runtime_released(job: dict, *, timeout: float = 10.0,
+                                 sleep=time.sleep, port_open=None,
+                                 lock_held=None) -> tuple[bool, str]:
+    """Wait until the failed agent released its lock and panel port."""
+    port_open = port_open or (lambda: _panel_port_open(job))
+    lock_held = lock_held or (lambda: lock_is_held(_agent_lock_path(job)))
+    deadline = time.monotonic() + max(0.1, timeout)
+    last = "agent runtime still held"
+    while True:
         try:
-            proc.kill()
-        except OSError:
-            pass
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and proc.poll() is None:
-            threading.Event().wait(0.05)
+            held = bool(lock_held())
+        except Exception:
+            held = True
+        try:
+            listening = bool(port_open())
+        except Exception:
+            listening = True
+        if not held and not listening:
+            return True, "ok"
+        last = (f"agent runtime not released (lock_held={held}, "
+                f"panel_port_open={listening})")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, last
+        sleep(min(0.2, max(0.01, remaining)))
+
+
+def _terminate_pids(pids, *, timeout: float = 10.0, sleep=time.sleep) -> bool:
+    targets = []
+    for value in pids:
+        try:
+            pid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            targets.append(pid)
+    targets = list(dict.fromkeys(targets))
+    if not targets:
+        return True
+    if os.name == "nt":
+        for pid in reversed(targets):
+            if not _pid_alive(pid):
+                continue
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=15, **hidden_window_options(["taskkill"]))
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+    else:
+        for pid in reversed(targets):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+    deadline = time.monotonic() + max(0.1, timeout)
+    while any(_pid_alive(pid) for pid in targets):
+        if time.monotonic() >= deadline:
+            break
+        sleep(0.1)
+    remaining = [pid for pid in targets if _pid_alive(pid)]
+    if remaining:
+        for pid in remaining:
+            try:
+                if os.name == "nt":
+                    os.kill(pid, signal.SIGTERM)
+                else:
+                    os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+        deadline = time.monotonic() + max(0.1, timeout)
+        while any(_pid_alive(pid) for pid in targets):
+            if time.monotonic() >= deadline:
+                break
+            sleep(0.1)
+    return not any(_pid_alive(pid) for pid in targets)
+
+
+def _stop_agent_process_tree(job: dict, proc=None, *, timeout: float = 10.0,
+                             release_timeout: float = 10.0, sleep=time.sleep,
+                             parent_map=None, port_open=None,
+                             lock_held=None) -> tuple[bool, str]:
+    """Stop the spawned redirector and every runtime child, then verify release."""
+    roots = []
+    live_pid = 0
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                live_pid = int(getattr(proc, "pid", 0) or 0)
+        except Exception:
+            live_pid = 0
+    if live_pid > 0:
+        roots.append(live_pid)
+    marker_pids = _marker_instance_pids(job)
+    roots.extend(marker_pids)
+    # Without an owned marker, the journal pid is only safe while the Popen
+    # object is still the live process we spawned.  A reused pid after exit
+    # must never be killed.
+    if not marker_pids and live_pid > 0:
+        try:
+            journal_pid = int(job.get("new_pid") or 0)
+        except (TypeError, ValueError):
+            journal_pid = 0
+        if journal_pid == live_pid:
+            roots.append(journal_pid)
+    if not marker_pids and live_pid <= 0:
+        lock_pid = _agent_lock_owner_pid(job)
+        if lock_pid > 0:
+            roots.append(lock_pid)
+    roots = list(dict.fromkeys(roots))
+    if not roots:
+        return _wait_agent_runtime_released(
+            job, timeout=release_timeout, sleep=sleep, port_open=port_open,
+            lock_held=lock_held)
+    parents = parent_map if parent_map is not None else process_parents()
+    if callable(parents):
+        parents = parents()
+    targets = descendant_pids(roots, parents=parents)
+    alive = [pid for pid in targets if _pid_alive(pid)]
+    if alive and not _terminate_pids(alive, timeout=timeout, sleep=sleep):
+        return False, "agent process tree did not exit"
+    # The redirector can create the runtime child between our snapshot and the
+    # kill.  Take one more snapshot from the same roots and stop anything new.
+    if parent_map is None:
+        refreshed = [pid for pid in descendant_pids(roots)
+                     if _pid_alive(pid)]
+        if refreshed and not _terminate_pids(refreshed, timeout=timeout,
+                                             sleep=sleep):
+            return False, "agent process tree did not exit"
+    return _wait_agent_runtime_released(
+        job, timeout=release_timeout, sleep=sleep, port_open=port_open,
+        lock_held=lock_held)
+
+
+def _mark_rollback_failed(job: dict, job_path, layout: Layout,
+                          reason: str) -> dict:
+    job["status"] = "rollback_failed"
+    job["rollback_reason"] = reason
+    write_json(job_path, job)
+    write_status(layout, "rollback_failed", version=job.get("from_version", ""),
+                 detail=reason)
+    log_event(layout, "ROLLBACK FAILED: " + reason)
+    return {"ok": False, "rolled_back": False, "reason": reason}
 
 
 def _wait_for_health(job: dict, proc, version: str, *, timeout: float,
@@ -1193,7 +1386,13 @@ def supervise_job(job_path, *, spawn_agent=start_agent, health_probe=probe_healt
     except Exception as exc:
         reason = _safe_reason(exc)
         log_event(layout, "update failed: " + reason)
-        _stop_process(new_proc)
+        stopped, stop_reason = _stop_agent_process_tree(job, new_proc)
+        if not stopped:
+            return _mark_rollback_failed(
+                job, job_path, layout,
+                "failed agent did not release its runtime before rollback: "
+                + stop_reason)
+        log_event(layout, "failed agent tree stopped; rollback can restore files")
         try:
             job["reason"] = reason
             try:
@@ -1244,13 +1443,7 @@ def supervise_job(job_path, *, spawn_agent=start_agent, health_probe=probe_healt
             raise UpdateError(f"old version did not become healthy: {health_reason}")
         except Exception as rollback_exc:
             rollback_reason = _safe_reason(rollback_exc)
-            job["status"] = "rollback_failed"
-            job["rollback_reason"] = rollback_reason
-            write_json(job_path, job)
-            write_status(layout, "rollback_failed", version=job["from_version"],
-                         detail=rollback_reason)
-            log_event(layout, "ROLLBACK FAILED: " + rollback_reason)
-            return {"ok": False, "rolled_back": False, "reason": rollback_reason}
+            return _mark_rollback_failed(job, job_path, layout, rollback_reason)
 
 
 def spawn_supervisor(layout: Layout, job: dict, *, python_exe=None) -> subprocess.Popen:

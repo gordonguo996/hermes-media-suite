@@ -25,7 +25,7 @@ from winport import process_identity, updater  # noqa: E402
 
 
 TOKEN = "0123456789abcdef0123456789abcdef"
-VERSION = "1.2.192"
+VERSION = "1.2.193"
 HEALTH_URL = "http://127.0.0.1:9223/healthz"
 
 
