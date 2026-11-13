@@ -20,6 +20,20 @@ def _load(name, path):
     return module
 
 
+def _snapshot_agent_modules():
+    """These classes stub ``agent`` / ``agent.winport`` in sys.modules.  Left in
+    place they shadow the real client package for every later test file (a
+    real ``winport.cli`` then resolves ``from .logutil`` against the stub)."""
+    return {k: v for k, v in sys.modules.items() if k == "agent" or k.startswith("agent.")}
+
+
+def _restore_agent_modules(saved):
+    for k in [k for k in sys.modules if k == "agent" or k.startswith("agent.")]:
+        if k not in saved:
+            del sys.modules[k]
+    sys.modules.update(saved)
+
+
 class BotDeviceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -517,7 +531,12 @@ class ReceiptDeviceTests(unittest.TestCase):
 
 class AgentProtocolTests(unittest.TestCase):
     @classmethod
+    def tearDownClass(cls):
+        _restore_agent_modules(cls._saved_agent_modules)
+
+    @classmethod
     def setUpClass(cls):
+        cls._saved_agent_modules = _snapshot_agent_modules()
         for name in ("agent", "agent.winport"):
             module = types.ModuleType(name)
             module.__path__ = []
@@ -588,13 +607,18 @@ class AgentProtocolTests(unittest.TestCase):
 
 class RemoteOpsDeviceTests(unittest.TestCase):
     @classmethod
+    def tearDownClass(cls):
+        _restore_agent_modules(cls._saved_agent_modules)
+
+    @classmethod
     def setUpClass(cls):
-        # Reuse the agent.winport stubs and add the remaining winport modules.
-        for name in ("agent", "agent.winport"):
-            sys.modules.setdefault(name, types.ModuleType(name))
-            sys.modules[name].__path__ = []
-        if "agent.winport.customer_paths" not in sys.modules:
-            AgentProtocolTests.setUpClass()
+        cls._saved_agent_modules = _snapshot_agent_modules()
+        # Install fresh agent.winport stubs (never mutate a real package that an
+        # earlier-collected test imported -- setting __path__ = [] on it broke
+        # every later relative import), then add the remaining winport modules.
+        saved = getattr(AgentProtocolTests, "_saved_agent_modules", None)
+        AgentProtocolTests.setUpClass()
+        AgentProtocolTests._saved_agent_modules = saved
         idem = types.ModuleType("agent.winport.idempotency")
         idem.material_fingerprint = lambda piece, account_id=None: "hash"
         jsonio = types.ModuleType("agent.winport.jsonio")

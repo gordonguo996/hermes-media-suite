@@ -430,7 +430,7 @@ def _read_launcher_text(path: Path) -> str:
 
 
 def _program_from_launcher(command, *, data=None, log=None):
-    """Resolve every historical Run-key launcher form to its product root.
+    r"""Resolve every historical Run-key launcher form to its product root.
 
     Handles the product's ``scripts\run-agent-task.vbs``, a desktop/start-menu
     wrapper that reads ``run\program-path.txt``, and wrappers that embed the
@@ -1384,7 +1384,7 @@ class Installer:
         return killed
 
     def step_quiesce(self) -> None:
-        """Stop old supervisors/agents BEFORE anything writes into the venv.
+        r"""Stop old supervisors/agents BEFORE anything writes into the venv.
 
         1.2.178: this used to run only in step_stop_running(), i.e. after
         step_wheels().  pip then overwrote

@@ -116,20 +116,42 @@ def new_layout(tmp: Path, name="data", program=ROOT) -> Layout:
 
 
 # --------------------------------------------------------------------- MAIN CHAIN
+def _license_line(out: str) -> str:
+    return next((l for l in out.splitlines() if " license " in l), "")
+
+
 def case_M1_install(tmp: Path):
+    # 1.2.194+: a fresh data area has no licence and no trial -> licence RED with
+    # the machine-code / activation-code route.  The installer (bootstrap_py
+    # step_trial) then creates the 14-day trial ONCE, after which selftest is
+    # WARN for the licence and exit 0.  Both halves are checked here.
+    from winport.license import initialize_trial
     layout = new_layout(tmp)
     seed_config(layout)
     env_dirs = [p.name for p in sorted(layout.profiles.glob("env_*"))]
-    res = cli(["selftest"], data=layout.data)
+    sysenv = {"WINPORT_SYSTEM": str(layout.system)}   # hermetic: never the tester's ~/.config
+    before = cli(["selftest"], data=layout.data, extra_env=sysenv)
+    pre_line = _license_line(before["out"])
+    pre_ok = (before["rc"] == EXIT_GATE_RED and pre_line.startswith("[RED")
+              and "机器码" in pre_line and "激活码" in pre_line)
+    trial = initialize_trial(layout)
+    res = cli(["selftest"], data=layout.data, extra_env=sysenv)
+    lic_line = _license_line(res["out"])
     light_line = "\n".join(l for l in res["out"].splitlines()
                            if l.startswith("[") or "SELFTEST" in l)
-    ok = res["rc"] == EXIT_OK and set(env_dirs) >= {"env_1", "env_2", "env_wechat", "env_xhs"}
-    record("M1", "装（本机可验部分：数据区+配置+自检）", "main",
-           f"{res['cmd']}  # 另：bootstrap.ps1 建目录/铺配置/venv/自启动",
-           "自检 exit=0；四个环境目录已建；配置已铺",
-           res["rc"], f"env dirs: {env_dirs}\n{light_line}", ok,
-           note=("Windows 侧 bootstrap.ps1（venv、Task Scheduler 自启动、快捷方式）"
-                 "只能在真机执行 → 见待真机清单 W1/W2"))
+    ok = (pre_ok and trial.get("created") and res["rc"] == EXIT_OK
+          and lic_line.startswith("[WARN") and "试用" in lic_line
+          and set(env_dirs) >= {"env_1", "env_2", "env_wechat", "env_xhs"})
+    record("M1", "装（本机可验部分：数据区+配置+试用+自检）", "main",
+           f"{before['cmd']}  →  initialize_trial()  →  {res['cmd']}"
+           "  # 另：bootstrap.ps1 建目录/铺配置/venv/自启动",
+           "建试用前：自检 exit=2，license RED 且给出机器码+激活码路径；"
+           "安装建试用后：自检 exit=0，license WARN（试用剩余天数）；四个环境目录已建",
+           res["rc"],
+           f"env dirs: {env_dirs}\n建试用前 exit={before['rc']}: {pre_line[:160]}\n"
+           f"initialize_trial: {trial}\n建试用后:\n{light_line}", ok,
+           note=("Windows 侧 bootstrap.ps1（venv、Task Scheduler 自启动、快捷方式、"
+                 "注册表试用副本）只能在真机执行 → 见待真机清单 W1/W2"))
 
 
 def case_M2_activation(tmp: Path):
