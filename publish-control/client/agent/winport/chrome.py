@@ -567,6 +567,40 @@ def cdp_version(port, *, host="127.0.0.1", timeout=1.5) -> dict:
             "error": ""}
 
 
+def cdp_browser_alive(port, *, host="127.0.0.1", timeout=8.0) -> dict:
+    """Prove the browser behind ``port`` can actually be driven.
+
+    1.2.216: ``cdp_version`` only reads the HTTP endpoint, and that endpoint
+    keeps answering while the browser-level WebSocket is wedged.  A Chrome in
+    that state passed every reuse check, and the very next publish died 30s
+    later inside ``connect_over_cdp`` with "发布浏览器没有启动成功".  Only a real
+    handshake tells a working browser from a frozen one.
+    """
+    if not port:
+        return {"ok": False, "browser": None, "error": "no debug port"}
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        # No playwright in this interpreter: we cannot judge the browser, and a
+        # false "hung" verdict would kill a perfectly good one, so stay neutral.
+        return {"ok": True, "browser": None, "skipped": True,
+                "error": f"{type(exc).__name__}: {exc}"}
+    url = f"http://{host}:{int(port)}"
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(
+                url, timeout=max(int(timeout * 1000), 1000))
+            try:
+                version = str(browser.version or "")
+            finally:
+                # close() drops the CDP connection only; the browser lives on.
+                browser.close()
+    except Exception as exc:
+        return {"ok": False, "browser": None,
+                "error": f"{type(exc).__name__}: {exc}"[:300]}
+    return {"ok": True, "browser": version, "error": ""}
+
+
 def cdp_pages(port, *, host="127.0.0.1", timeout=1.5) -> list:
     """List open page targets via http://host:port/json/list."""
     url = f"http://{host}:{int(port)}/json/list"
@@ -919,7 +953,7 @@ def reusable_instance_evidence(marker, profile, *, expected_exe, expected_port,
 
 def launch_environment(env, layout, *, url=None, probe=cdp_version,
                        timeout=20.0, spawn_fn=None, chrome_path=None,
-                       edge_path=None) -> dict:
+                       edge_path=None, alive_probe=cdp_browser_alive) -> dict:
     """Start the environment's browser and confirm the CDP port is live.
 
     Chrome-only (1.2.2): the customer's real Google Chrome or a plain-language
@@ -961,8 +995,39 @@ def launch_environment(env, layout, *, url=None, probe=cdp_version,
             expected_port=port)
         result["reuse_evidence"] = reuse
         if reuse.get("ok"):
-            reusing = True
-            existing = find_open_page(port, url) if url else None
+            # A listening port with a matching marker is still not proof the
+            # browser can be driven (see cdp_browser_alive).  Probe the real
+            # handshake and replace a frozen instance instead of handing it to
+            # the next publish.
+            alive = alive_probe(port) if (alive_probe and port) else {"ok": True}
+            result["cdp_handshake"] = alive
+            if alive_probe and port and not alive.get("ok"):
+                from . import proc
+                killed = proc.kill_profile_browsers(
+                    profile, expected_exe=detection["path"], expected_port=port)
+                if not killed:
+                    result.update(
+                        reason="BROWSER_HUNG_LOCKED",
+                        message=(f"{env.label} 的浏览器调试通道无响应（端口 {port}），"
+                                 "又无法确认该进程属于本程序；程序不会终止未确认归属的"
+                                 "进程，请手动关闭那个浏览器窗口后重试"))
+                    return result
+                for _ in range(60):
+                    if not port_open(port):
+                        break
+                    time.sleep(random.uniform(0.20, 0.30))
+                if port_open(port):
+                    result.update(
+                        reason="BROWSER_HUNG_LOCKED",
+                        message=(f"{env.label} 的浏览器调试通道无响应（端口 {port}），"
+                                 "关闭后端口仍被占用，请手动处理后重试"))
+                    return result
+                result["hung_browser_restarted"] = True
+                reusing = False
+                existing = None
+            else:
+                reusing = True
+                existing = find_open_page(port, url) if url else None
             if existing:
                 result.update(
                     opened=True, reused=True, reason="TAB_REUSED", pid=reuse["pid"],
@@ -972,10 +1037,11 @@ def launch_environment(env, layout, *, url=None, probe=cdp_version,
                     message=(f"{env.label} 的浏览器已开着目标页面（端口 {port}），"
                              "直接复用该标签页，不再新开窗口"))
                 return result
-            result.update(reused=True, reason="ALREADY_RUNNING", pid=reuse["pid"],
-                          runtime_argv_verified=True,
-                          message=(f"{env.label} 的浏览器已经在运行（端口 {port}），"
-                                   "已在该窗口打开新标签页"))
+            elif not result.get("hung_browser_restarted"):
+                result.update(reused=True, reason="ALREADY_RUNNING", pid=reuse["pid"],
+                              runtime_argv_verified=True,
+                              message=(f"{env.label} 的浏览器已经在运行（端口 {port}），"
+                                       "已在该窗口打开新标签页"))
         else:
             # A pre-1.2.23 process was launched before this flag existed. Reusing
             # it would leave the native dialog silently blocking every click, so
@@ -1041,6 +1107,19 @@ def launch_environment(env, layout, *, url=None, probe=cdp_version,
                      f"（{(cdp or {}).get('error')}）。多半是企业策略禁止远程调试，"
                      "请把这句话发给我们。"))
         return result
+    if port and alive_probe:
+        alive = alive_probe(port)
+        if not alive.get("ok"):
+            time.sleep(1.5)
+            alive = alive_probe(port)
+        result["cdp_handshake"] = alive
+        if not alive.get("ok"):
+            result.update(
+                opened=False, reason="CDP_HUNG",
+                message=(f"{env.label} 的浏览器已启动，但调试通道没有响应"
+                         f"（{alive.get('error')}）。请再试一次；如果还是这句，"
+                         "把这句话发给我们"))
+            return result
     # honest engine confirmation: the CDP endpoint names itself
     cdp_browser = (cdp or {}).get("browser")
     report_engine = browser_engine_of(cdp_browser)

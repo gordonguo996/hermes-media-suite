@@ -159,7 +159,16 @@ class Daemon:
             env_id = getattr(env, "env_id", "?")
             try:
                 if chrome.port_open(port):
-                    continue
+                    # 1.2.216: a listening port is not a working browser.
+                    # /json/version keeps answering while the browser-level
+                    # WebSocket is wedged, so a frozen Chrome looked healthy
+                    # here and the next publish died inside connect_over_cdp.
+                    # Only a real handshake proves the account is publishable;
+                    # otherwise fall through and replace the instance.
+                    alive = chrome.cdp_browser_alive(port)
+                    if alive.get("ok"):
+                        continue
+                    info.setdefault("hung", []).append(env_id)
                 if time.monotonic() < float(state.get(env_id) or 0):
                     info["skipped"].append(env_id)
                     continue

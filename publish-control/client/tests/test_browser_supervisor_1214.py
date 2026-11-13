@@ -31,9 +31,13 @@ def _daemon(tmp_path, signed_in=("env_1", "env_2")):
     return d
 
 
-def _stub(monkeypatch, envs, port_open, open_impl):
+def _stub(monkeypatch, envs, port_open, open_impl, cdp_alive=None):
     monkeypatch.setattr(platforms, "load_registry", lambda layout: (envs, []))
     monkeypatch.setattr(chrome, "port_open", port_open)
+    # 1.2.216: a listening port only counts as healthy when the browser also
+    # answers a real CDP handshake, so every stub must state that explicitly.
+    monkeypatch.setattr(chrome, "cdp_browser_alive",
+                        cdp_alive or (lambda port, **kw: {"ok": True, "browser": "Chrome/156"}))
     monkeypatch.setattr(browser_mod, "open_environment", open_impl)
 
 
