@@ -531,7 +531,8 @@ def case_F7_tamper(tmp: Path):
     import shutil
     target = tmp / "tamper"
     shutil.copytree(ROOT, target,
-                    ignore=shutil.ignore_patterns("__pycache__", ".git"))
+                    ignore=shutil.ignore_patterns("__pycache__", ".git",
+                                            ".pytest_cache"))
     sys.path.insert(0, str(ROOT / "tools"))
     import importlib
     build_bundle = importlib.import_module("build_bundle")

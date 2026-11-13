@@ -1,0 +1,301 @@
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport selftest --data /tmp/sv3-dk7rq5wv/00-case_M1_install/data
+[exit=2]
+============================================================
+publish-assistant self-test
+============================================================
+[GREEN  ] python          python 3.11.15, playwright import ok
+[SKIPPED] tray            pystray/Pillow absent (static host): No module named 'pystray'
+[SKIPPED] chrome          浏览器检测跳过（构建机静态自检）：本程序需要 Google Chrome（只认官方正版 Chrome，不用 Microsoft Edge、Chromium 或其它浏览器顶替）。这台电脑上没检测到 Google Chrome。怎么装（二选一）：① 用随包附带的官方离线安装包 chrome-offline\ChromeStandaloneSetup64.exe（双击即可，Google 官方原版、我们未做任何改动）；② 到官网下载安装：https://www.google.cn/chrome/（离线版：https://www.google.com/chrome/?standalone=1，国内：https://www.google.cn/chrome/?standalone=1）。装完这一个即可回控制面板点「重新检测」；除 Chrome 外什么都不用装。顺带说明：系统里也没检测到 Microsoft Edge（不影响运行）。
+[SKIPPED] media_tool      ffmpeg absent (static host)
+[RED    ] license         未找到正式授权（license.json），且试用未创建或已失效：未找到授权文件（license.json），且没有可继续的试用记录：拒绝发布。请打开面板顶部「查看机器码」（本机机器码：0cd04bdb12b0273c784d0103a8586fcd），把机器码发给服务商换取 8 位激活码，填入面板「激活码」框后点「用激活码激活」；也可让服务商签发 license.json，再用包内 import-license.bat 导入。
+[GREEN  ] evidence        /tmp/sv3-dk7rq5wv/00-case_M1_install/data/evidence（保留 14 天，现有 0 条）
+[GREEN  ] storage         data area writable: /tmp/sv3-dk7rq5wv/00-case_M1_install/data
+机器码: 0cd04bdb12b0273c784d0103a8586fcd
+------------------------------------------------------------
+SELFTEST: FAILED reds=['license']  (gate red)
+============================================================
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport selftest --data /tmp/sv3-dk7rq5wv/00-case_M1_install/data
+[exit=0]
+============================================================
+publish-assistant self-test
+============================================================
+[GREEN  ] python          python 3.11.15, playwright import ok
+[SKIPPED] tray            pystray/Pillow absent (static host): No module named 'pystray'
+[SKIPPED] chrome          浏览器检测跳过（构建机静态自检）：本程序需要 Google Chrome（只认官方正版 Chrome，不用 Microsoft Edge、Chromium 或其它浏览器顶替）。这台电脑上没检测到 Google Chrome。怎么装（二选一）：① 用随包附带的官方离线安装包 chrome-offline\ChromeStandaloneSetup64.exe（双击即可，Google 官方原版、我们未做任何改动）；② 到官网下载安装：https://www.google.cn/chrome/（离线版：https://www.google.com/chrome/?standalone=1，国内：https://www.google.cn/chrome/?standalone=1）。装完这一个即可回控制面板点「重新检测」；除 Chrome 外什么都不用装。顺带说明：系统里也没检测到 Microsoft Edge（不影响运行）。
+[SKIPPED] media_tool      ffmpeg absent (static host)
+[WARN   ] license         未导入正式授权（新客户包正常状态）；试用授权有效，剩余 14.0 天。请打开面板顶部「查看机器码」（本机机器码：0cd04bdb12b0273c784d0103a8586fcd），把机器码发给服务商换取 8 位激活码，填入面板「激活码」框后点「用激活码激活」；也可让服务商签发 license.json，再用包内 import-license.bat 导入。
+[GREEN  ] evidence        /tmp/sv3-dk7rq5wv/00-case_M1_install/data/evidence（保留 14 天，现有 0 条）
+[GREEN  ] storage         data area writable: /tmp/sv3-dk7rq5wv/00-case_M1_install/data
+机器码: 0cd04bdb12b0273c784d0103a8586fcd
+------------------------------------------------------------
+SELFTEST: ALL GREEN  (static host: platform-bound lights skipped)
+============================================================
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport license-check --license /tmp/sv3-dk7rq5wv/01-case_M2_activation/license.json --data /tmp/sv3-dk7rq5wv/01-case_M2_activation/act
+[exit=5]
+{
+  "status": "SIGNATURE_INVALID",
+  "reason": "signature does not verify with vendor key"
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport login-open --env env_1 --dry-run --chrome-path /tmp/sv3-dk7rq5wv/02-case_M3_login/fake/chrome.exe --data /tmp/sv3-dk7rq5wv/02-case_M3_login/login
+[exit=0]
+{
+  "results": [
+    {
+      "channel_id": "env_1:douyin",
+      "env_id": "env_1",
+      "platform": "douyin",
+      "nickname": "抖音",
+      "opened": false,
+      "reused": false,
+      "pid": null,
+      "reason": "DRY_RUN",
+      "message": "只演练、不启动（--dry-run）",
+      "command": [
+        "/tmp/sv3-dk7rq5wv/02-case_M3_login/fake/chrome.exe",
+        "--user-data-dir=/tmp/sv3-dk7rq5wv/02-case_M3_login/login/profiles/env_1",
+        "--remote-debugging-port=9224",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--new-window",
+        "--remote-allow-origins=http://127.0.0.1",
+        "--disable-gpu",
+        "--disable-gpu-compositing",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--window-size=1440,900",
+        "--window-position=80,60",
+        "--disable-features=ExternalProtocolDialog,Translate,CalculateNativeWinOcclusion",
+        "https://creator.douyin.com/"
+      ],
+      "browser": "/tmp/sv3-dk7rq5wv/02-case_M3_login/fake/chrome.exe",
+      "engine": "chrome",
+      "tier": 1
+    },
+    {
+      "channel_id": "env_1:xingtu",
+      "env_id": "env_1",
+      "platform": "xingtu",
+      "nickname": "星图",
+      "opened": false,
+      "reused": false,
+      "pid": null,
+      "reason": "DRY_RUN",
+      "message": "只演练、不启动（--dry-run）",
+      "command": [
+        "/tmp/sv3-dk7rq5wv/02-case_M3_login/fake/chrome.exe",
+        "--user-data-dir=/tmp/sv3-dk7rq5wv/02-case_M3_login/login/profiles/env_1",
+        "--remote-debugging-port=9224",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--new-window",
+        "--remote-allow-origins=http://127.0.0.1",
+        "--disable-gpu",
+        "--disable-gpu-compositing",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--window-size=1440,900",
+        "--window-position=80,60",
+        "--disable-features=ExternalProtocolDialog,Translate,CalculateNativeWinOcclusion",
+        "https://www.xingtu.cn/"
+      ],
+      "browser": "/tmp/sv3-dk7rq5wv/02-case_M3_login/fake/chrome.exe",
+      "engine": "chrome",
+      "tier": 1
+    }
+  ]
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport login-check --env env_1 --data /tmp/sv3-dk7rq5wv/02-case_M3_login/login
+[exit=2]
+通道                
+平台      
+状态          
+原因/证据
+env_1:douyin       抖音       OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_1:xingtu       星图       OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_2:douyin       抖音       OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_2:xingtu       星图       OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_wechat:shipinhao 视频号      OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_wechat:gongzhonghao 公众号      OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+env_xhs:xiaohongshu 小红书      OFFLINE      登录态目录不存在或为空：这台机器上这个通道还没登录过，先点『开始登录』扫码
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport collect-offline --xlsx /tmp/sv3-dk7rq5wv/06-case_M7_collect/export.xlsx --data /tmp/sv3-dk7rq5wv/06-case_M7_collect/col
+[exit=0]
+{
+  "header": [
+    "col1",
+    "col2",
+    "col3",
+    "col4",
+    "col5",
+    "col6",
+    "col7",
+    "col8",
+    "col9",
+    "col10",
+    "col11",
+    "col12",
+    "col13"
+  ],
+  "column_count": 13,
+  "row_count": 2,
+  "outputs": {
+    "json": "/tmp/sv3-dk7rq5wv/06-case_M7_collect/col/out/douyin/作品列表导出_20261113.json",
+    "csv": "/tmp/sv3-dk7rq5wv/06-case_M7_collect/col/out/douyin/作品列表导出_20261113.csv",
+    "evidence": "/tmp/sv3-dk7rq5wv/06-case_M7_collect/col/evidence/export-header.json"
+  }
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport collect-offline --xlsx /tmp/sv3-dk7rq5wv/07-case_M8_report/export.xlsx --data /tmp/sv3-dk7rq5wv/07-case_M8_report/rep
+[exit=0]
+{
+  "header": [
+    "col1",
+    "col2",
+    "col3",
+    "col4",
+    "col5",
+    "col6",
+    "col7",
+    "col8",
+    "col9",
+    "col10",
+    "col11",
+    "col12",
+    "col13"
+  ],
+  "column_count": 13,
+  "row_count": 2,
+  "outputs": {
+    "json": "/tmp/sv3-dk7rq5wv/07-case_M8_report/rep/out/douyin/作品列表导出_20261113.json",
+    "csv": "/tmp/sv3-dk7rq5wv/07-case_M8_report/rep/out/douyin/作品列表导出_20261113.csv",
+    "evidence": "/tmp/sv3-dk7rq5wv/07-case_M8_report/rep/evidence/export-header.json"
+  }
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport report --collection-json /tmp/sv3-dk7rq5wv/07-case_M8_report/collection.json --data /tmp/sv3-dk7rq5wv/07-case_M8_report/rep
+[exit=0]
+{
+  "md": "/tmp/sv3-dk7rq5wv/07-case_M8_report/rep/out/reports/日报_2026-11-13.md",
+  "xlsx": "/tmp/sv3-dk7rq5wv/07-case_M8_report/rep/out/reports/日报_2026-11-13.xlsx"
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport downlink-once --bucket /tmp/sv3-dk7rq5wv/08-case_F1_offline/empty-bucket --data /tmp/sv3-dk7rq5wv/08-case_F1_offline/f1
+[exit=5]
+{
+  "listed": false,
+  "manifest_seq": null,
+  "downloaded": 0,
+  "skipped": 0,
+  "failed": 0,
+  "folders": [],
+  "errors": [
+    "customer_id required (found 0 local customer prefixes)"
+  ]
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport downlink-once --token-endpoint http://127.0.0.1:9/token --customer-id c --data /tmp/sv3-dk7rq5wv/08-case_F1_offline/f1
+[exit=5]
+{
+  "listed": false,
+  "manifest_seq": null,
+  "downloaded": 0,
+  "skipped": 0,
+  "failed": 0,
+  "folders": [],
+  "errors": [
+    "network error: [Errno 111] Connection refused"
+  ]
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport selftest --data /tmp/sv3-dk7rq5wv/09-case_F2_permission/locked/data
+[exit=4]
+ERROR(4): cannot create data area /tmp/sv3-dk7rq5wv/09-case_F2_permission/locked/data: [Errno 13] Permission denied: '/tmp/sv3-dk7rq5wv/09-case_F2_permission/locked/data/profiles'
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport downlink-once --bucket /tmp/sv3-dk7rq5wv/11-case_F4_disk/b4 --data /tmp/sv3-dk7rq5wv/11-case_F4_disk/f4
+[exit=5]
+{
+  "listed": false,
+  "manifest_seq": null,
+  "downloaded": 0,
+  "skipped": 0,
+  "failed": 0,
+  "folders": [],
+  "errors": [
+    "磁盘可用空间不足：仅 9.07 GB，低于阈值 1073740.75 GB；本轮取件已停止，未写入任何文件（清出空间后自动重试）"
+  ],
+  "disk_low": true
+}
+
+
+$ /home/ubuntu/.hermes/hermes-agent/venv/bin/python3 -m winport chrome-probe --data /tmp/sv3-dk7rq5wv/18-case_C1_chrome/c1
+[exit=5]
+{
+  "found": false,
+  "engine": null,
+  "tier": null,
+  "path": null,
+  "source": null,
+  "needs_chrome": true,
+  "reason": "本程序需要 Google Chrome（只认官方正版 Chrome，不用 Microsoft Edge、Chromium 或其它浏览器顶替）。这台电脑上没检测到 Google Chrome。怎么装（二选一）：① 用随包附带的官方离线安装包 chrome-offline\\ChromeStandaloneSetup64.exe（双击即可，Google 官方原版、我们未做任何改动）；② 到官网下载安装：https://www.google.cn/chrome/（离线版：https://www.google.com/chrome/?standalone=1，国内：https://www.google.cn/chrome/?standalone=1）。装完这一个即可回控制面板点「重新检测」；除 Chrome 外什么都不用装。顺带说明：系统里也没检测到 Microsoft Edge（不影响运行）。",
+  "requires": "chrome",
+  "fallback_disabled": true,
+  "edge": {
+    "present": false,
+    "path": null,
+    "source": null,
+    "checked": [
+      "PATH:msedge.exe",
+      "PATH:msedge"
+    ],
+    "note": "系统里没检测到 Microsoft Edge（不影响运行）。"
+  },
+  "checked": [
+    "PATH:chrome.exe",
+    "PATH:chrome"
+  ],
+  "tiers": [
+    {
+      "tier": 1,
+      "engine": "chrome",
+      "found": false,
+      "path": null,
+      "source": null,
+      "reason": "本机不是 Windows（构建机静态自检）：无法探测客户机 Chrome；真机项见 VERIFY.md C7"
+    }
+  ],
+  "download_url": "https://www.google.cn/chrome/",
+  "offline_download_url": "https://www.google.com/chrome/?standalone=1",
+  "bundled_installer": "chrome-offline/ChromeStandaloneSetup64.exe",
+  "min_major": 100,
+  "engine_label": "",
+  "version": null,
+  "major": null,
+  "version_ok": null,
+  "policy": {
+    "blocked": null,
+    "details": [
+      "非 Windows：策略检测跳过（静态自检）"
+    ]
+  },
+  "previous_major": null,
+  "version_changed": false,
+  "engine_changed": false,
+  "summary": "本程序需要 Google Chrome（只认官方正版 Chrome，不用 Microsoft Edge、Chromium 或其它浏览器顶替）。这台电脑上没检测到 Google Chrome。怎么装（二选一）：① 用随包附带的官方离线安装包 chrome-offline\\ChromeStandaloneSetup64.exe（双击即可，Google 官方原版、我们未做任何改动）；② 到官网下载安装：https://www.google.cn/chrome/（离线版：https://www.google.com/chrome/?standalone=1，国内：https://www.google.cn/chrome/?standalone=1）。装完这一个即可回控制面板点「重新检测」；除 Chrome 外什么都不用装。顺带说明：系统里也没检测到 Microsoft Edge（不影响运行）。"
+}

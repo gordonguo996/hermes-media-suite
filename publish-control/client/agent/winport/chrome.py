@@ -1110,7 +1110,8 @@ def launch_environment(env, layout, *, url=None, probe=cdp_version,
     if port and alive_probe:
         alive = alive_probe(port)
         if not alive.get("ok"):
-            time.sleep(1.5)
+            # variable backoff, never a fixed literal wait
+            time.sleep(random.uniform(1.2, 1.9))
             alive = alive_probe(port)
         result["cdp_handshake"] = alive
         if not alive.get("ok"):
