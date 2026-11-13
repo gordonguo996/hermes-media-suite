@@ -215,6 +215,10 @@ PUBLISHED_AT_SELECTORS = (
     "[data-e2e='publish-time']",
     "[aria-label='\u53d1\u5e03\u65f6\u95f4']",
 )
+# P0 (2026-11-13): playwright refuses to stream >50MB to a browser that is
+# not co-located; files above this go through CDP DOM.setFileInputFiles.
+LARGE_UPLOAD_CDP_BYTES = 45 * 1000 * 1000
+
 UPLOAD_RESOURCE_SELECTORS = (
     "[data-upload-id]",
     "[data-resource-id]",
@@ -3700,6 +3704,8 @@ class PlaywrightDriver:
             if len(candidates) == 1:
                 self._progress("upload.input.scanned", total=1,
                                picked=candidates[0]["index"])
+                self._upload_input_pick = {"frame": candidates[0]["frame"],
+                                           "index": candidates[0]["index"]}
                 return candidates[0]["node"], "input[type=file]", snapshot
             if len(candidates) > 1:
                 visible = [item for item in candidates if item["visible"]]
@@ -3708,6 +3714,8 @@ class PlaywrightDriver:
                                    total=len(candidates),
                                    picked=visible[0]["index"],
                                    visible_only=True)
+                    self._upload_input_pick = {"frame": visible[0]["frame"],
+                                               "index": visible[0]["index"]}
                     return visible[0]["node"], "input[type=file]", snapshot
                 self._progress("upload.input.ambiguous", **snapshot)
                 self._fail("\u9875\u9762\u4e0a\u6709\u591a\u4e2a\u53ef\u7528\u7684"
@@ -3727,6 +3735,72 @@ class PlaywrightDriver:
                            "\u91cd\u53d1\u3002", step="upload")
             # wait-ok: poll
             time.sleep(0.5)
+
+    @staticmethod
+    def _cdp_find_node_id(node, marker):
+        """Walk a CDP node tree (shadow roots + iframes) for our marker."""
+        attrs = (node or {}).get("attributes") or []
+        for pos in range(0, len(attrs) - 1, 2):
+            if attrs[pos] == "data-hl-upload" and attrs[pos + 1] == marker:
+                return node.get("nodeId")
+        for key in ("children", "shadowRoots"):
+            for child in (node or {}).get(key) or []:
+                found = PlaywrightDriver._cdp_find_node_id(child, marker)
+                if found:
+                    return found
+        document = (node or {}).get("contentDocument")
+        if document:
+            return PlaywrightDriver._cdp_find_node_id(document, marker)
+        return None
+
+    def _set_input_files_cdp(self, locator, media):
+        """Attach a local file through CDP so size is not capped at 50MB.
+
+        ``locator.set_input_files`` streams the whole payload through the
+        playwright driver, which refuses anything above 50MB when the browser
+        is not co-located ("Cannot transfer files larger than 50Mb").  The
+        browser runs on this same machine, so CDP ``DOM.setFileInputFiles``
+        can hand it the path directly and Chrome reads the file itself.
+
+        The node is located by tagging the element through the same locator
+        playwright already resolved, then finding that marker in the pierced
+        CDP tree -- no selector re-query, so shadow DOM and iframes are safe.
+        """
+        pick = getattr(self, "_upload_input_pick", None) or {}
+        frames = _page_frames(self._page)
+        frame_index = int(pick.get("frame") or 0)
+        if frame_index >= len(frames):
+            raise RuntimeError("cdp_frame_missing")
+        frame = frames[frame_index]
+        marker = "hl%d" % int(time.time() * 1000)
+        handle = locator.element_handle()
+        if handle is None:
+            raise RuntimeError("cdp_handle_missing")
+        session = None
+        try:
+            handle.evaluate(
+                "(el, m) => el.setAttribute('data-hl-upload', m)", marker)
+            session = self._page.context.new_cdp_session(frame)
+            session.send("DOM.enable")
+            doc = session.send("DOM.getDocument", {"depth": -1,
+                                                  "pierce": True})
+            node_id = self._cdp_find_node_id((doc or {}).get("root"), marker)
+            if not node_id:
+                raise RuntimeError("cdp_input_missing")
+            session.send("DOM.setFileInputFiles",
+                         {"files": [os.path.abspath(str(media))],
+                          "nodeId": node_id})
+        finally:
+            if session is not None:
+                try:
+                    session.detach()
+                except Exception:
+                    pass
+            try:
+                handle.evaluate(
+                    "(el) => el.removeAttribute('data-hl-upload')")
+            except Exception:
+                pass
 
     def _upload_navigation_timeout_seconds(self):
         settings = getattr(self, "settings", None) or {}
@@ -5495,7 +5569,15 @@ class PlaywrightDriver:
                            path=_log_basename(media),
                            timeout_ms=set_timeout_ms)
             try:
-                locator.set_input_files(str(media), timeout=set_timeout_ms)
+                if int(attempt.size or 0) > LARGE_UPLOAD_CDP_BYTES:
+                    # >50MB cannot ride the playwright protocol; hand the
+                    # local path to chrome over CDP instead.
+                    self._progress("upload.set_input_files.cdp",
+                                   path=_log_basename(media),
+                                   bytes=attempt.size)
+                    self._set_input_files_cdp(locator, media)
+                else:
+                    locator.set_input_files(str(media), timeout=set_timeout_ms)
             except Exception as exc:
                 error_text = _redact_log_text(
                     type(exc).__name__ + ": " + str(exc))
