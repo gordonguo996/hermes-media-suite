@@ -261,11 +261,28 @@ def _open_channel_impl(layout, channel, *, processes=None, dry_run=False,
 def open_environment(layout, env, *, url=None, processes=None, dry_run=False,
                      spawn=None, probe=None, timeout=20.0, chrome_path=None,
                      edge_path=None):
-    """Public entry: bring up an environment; keep evidence if it fails (B)."""
-    result = _open_environment_impl(layout, env, url=url, processes=processes,
-                                    dry_run=dry_run, spawn=spawn, probe=probe,
-                                    timeout=timeout, chrome_path=chrome_path,
-                                    edge_path=edge_path)
+    """Public entry: bring up an environment; keep evidence if it fails (B).
+
+    1.2.214: this is the ONE place a browser may be launched, so the
+    per-environment launch lock lives here and nowhere else.  The daemon
+    supervisor, the panel button and the publish flow therefore cannot start the
+    same account twice at the same moment; whoever loses the race gets a plain
+    "already starting" answer instead of a second Chrome.
+    """
+    from .lock import FileLock
+    lock = FileLock(layout.run / f"env-{env.env_id}.launch.lock")
+    if not lock.acquire():
+        return {"env_id": env.env_id, "label": env.label, "opened": False,
+                "reused": False, "pid": None, "reason": "LAUNCH_IN_PROGRESS",
+                "message": f"{env.label} 的浏览器正在启动中，请稍后再试",
+                "command": [], "cdp": None, "engine": None, "tier": None}
+    try:
+        result = _open_environment_impl(layout, env, url=url, processes=processes,
+                                        dry_run=dry_run, spawn=spawn, probe=probe,
+                                        timeout=timeout, chrome_path=chrome_path,
+                                        edge_path=edge_path)
+    finally:
+        lock.release()
     _capture_step_failure(layout, "browser", result, env_id=env.env_id,
                           channel_id=None)
     return result

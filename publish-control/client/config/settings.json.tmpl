@@ -2,65 +2,22 @@
   "customer_id": "",
   "timezone": "Asia/Shanghai",
   "schedule": {
-    "min_lead_minutes": 130,
+    "min_lead_minutes": 3,
     "max_horizon_days": 14,
-    "avoid_minute_marks": [
-      0,
-      5,
-      10,
-      15,
-      20,
-      25,
-      30,
-      35,
-      40,
-      45,
-      50,
-      55
-    ],
+    "avoid_minute_marks": [],
     "gap_min": 5,
     "gap_max": 8,
     "windows": [
       [
-        "07:00",
-        "09:30"
-      ],
-      [
-        "11:00",
-        "13:30"
-      ],
-      [
-        "17:00",
-        "19:30"
-      ],
-      [
-        "20:00",
-        "22:30"
+        "00:00",
+        "23:59"
       ]
     ],
     "window_entries": [
       {
-        "id": "morning",
-        "start": "07:00",
-        "end": "09:30",
-        "enabled": true
-      },
-      {
-        "id": "noon",
-        "start": "11:00",
-        "end": "13:30",
-        "enabled": true
-      },
-      {
-        "id": "evening",
-        "start": "17:00",
-        "end": "19:30",
-        "enabled": true
-      },
-      {
-        "id": "night",
-        "start": "20:00",
-        "end": "22:30",
+        "id": "allday",
+        "start": "00:00",
+        "end": "23:59",
         "enabled": true
       }
     ],

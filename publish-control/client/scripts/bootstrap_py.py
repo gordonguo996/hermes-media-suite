@@ -907,6 +907,83 @@ def _write_verified_bytes(path: Path, payload: bytes, label: str) -> None:
                            % (label, path, len(payload), len(actual)))
 
 
+def _update_run_value(reg, key, name, value, legacy_names, reg_type, log) -> None:
+    """Overwrite the live autostart value, verify it, then drop duplicates.
+
+    ``reg`` is the winreg module (or a double with the same module-level
+    signatures: SetValueEx(key, name, reserved, type, value) ...).  Order
+    matters: the old code deleted every known value first and only then wrote
+    the new one, so a failure in between left HKCU Run empty while the previous
+    program directory had already been removed -- the machine could never start
+    the agent again.  The read-back is mandatory: an unverifiable value is a
+    failure, never an assumed success.
+    """
+    reg.SetValueEx(key, name, 0, reg_type, value)
+    try:
+        stored = reg.QueryValueEx(key, name)[0]
+    except OSError as exc:
+        raise RuntimeError("cannot verify autostart value %s: %s"
+                           % (name, exc)) from exc
+    if stored != value:
+        raise RuntimeError("autostart read-back mismatch: %r != %r"
+                           % (stored, value))
+    for legacy in legacy_names:
+        if legacy.casefold() == name.casefold():
+            continue
+        try:
+            reg.DeleteValue(key, legacy)
+            log("legacy autostart value removed: %s" % legacy)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            # The live value is already correct; a leftover duplicate is worth
+            # a warning, not a failed install, but it must not pass silently.
+            log("WARNING: legacy autostart value not removed: %s (%s)"
+                % (legacy, exc))
+
+
+def _install_start_paths(*, supervisor, target, payload, autostart, log):
+    """Register autostart and the desktop icon in the safe order.
+
+    With a supervisor present the icon is cosmetic: write the Run value first
+    and let a locked .vbs be skipped.  Without one the desktop launcher IS the
+    start path, so it must exist before Run points at it and a failure is fatal.
+    """
+    if supervisor is not None and supervisor.is_file():
+        autostart(supervisor)
+        return _write_desktop_launcher(target, payload, log, allow_skip=True)
+    entry = _write_desktop_launcher(target, payload, log, allow_skip=False)
+    autostart(entry)
+    return entry
+
+
+def _write_desktop_launcher(target: Path, payload: bytes, log,
+                            *, allow_skip: bool):
+    """Write the desktop launcher without ever destroying the working one.
+
+    Windows refuses to replace a .vbs that wscript.exe still has open
+    (WinError 5).  Deleting the target first would remove the only entry the
+    user has, so a blocked replace falls back to a second file name instead.
+    ``allow_skip`` is only true when autostart already points at the program
+    supervisor, which makes the desktop icon cosmetic rather than load-bearing.
+    """
+    try:
+        _write_verified_bytes(target, payload, "desktop launcher")
+        log("launcher created: %s" % target)
+        return target
+    except RuntimeError as exc:
+        log("desktop launcher blocked: %s" % exc)
+    alternate = target.with_name("%s-%s%s" % (target.stem, "new", target.suffix))
+    try:
+        _write_verified_bytes(alternate, payload, "desktop launcher (alternate)")
+        log("launcher created under alternate name: %s" % alternate)
+        return alternate
+    except RuntimeError as exc:
+        if allow_skip:
+            log("WARNING: desktop launcher skipped: %s" % exc)
+            return None
+        raise
+
 def _purge_leftover_dirs(roots, keep, current_version, log, protected=()) -> int:
     """Stop processes and delete verified old product directories.
 
@@ -1073,6 +1150,42 @@ class Installer:
             pass
 
     # ---------- helpers ----------
+    def _python_process_snapshot(self):
+        """Python 进程清单（带解释器路径与命令行）。
+
+        ``_process_snapshot`` 只收 wscript/cscript，用来判断"某个 vbs 是否在跑"。
+        清理孤儿代理要找的是 python 进程，必须单独枚举，否则清理分支永远不会命中。
+        """
+        if os.name != "nt":
+            return []
+        if not self.venv_py.is_file():
+            raise RuntimeError("process inventory interpreter missing")
+        script = (
+            "import json,psutil\n"
+            "out=[]\n"
+            "for p in psutil.process_iter(['pid','name','exe','cmdline']):\n"
+            "    try:\n"
+            "        name=(p.info.get('name') or '')\n"
+            "        if not name.lower().startswith('python'): continue\n"
+            "        argv=p.info.get('cmdline') or []\n"
+            "        if not argv: continue\n"
+            "        out.append({'pid':p.info['pid'],'name':name,"
+            "'exe':p.info.get('exe') or '','cmdline':argv})\n"
+            "    except psutil.NoSuchProcess: pass\n"
+            "print(json.dumps(out))\n")
+        result = subprocess.run([str(self.venv_py), "-c", script],
+                                capture_output=True, timeout=30,
+                                **text_mode_options())
+        if result.returncode != 0:
+            raise RuntimeError("python process inventory failed (rc=%s)" % result.returncode)
+        try:
+            value = json.loads(result.stdout)
+            if not isinstance(value, list):
+                raise ValueError("not a list")
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("invalid python process inventory") from exc
+        return value
+
     def _process_snapshot(self):
         """An incomplete process inventory is an error, never an empty machine."""
         if os.name != "nt":
@@ -1402,6 +1515,85 @@ class Installer:
                         break
             except (OSError, ValueError):
                 continue
+        # A supervisor can die while its agent keeps running, and an older
+        # install may have left its own ``python -m winport`` behind.  Such an
+        # orphan keeps answering publish commands from ITS root, so the freshly
+        # installed agent is shadowed by stale code and stale licence state
+        # (seen on a real upgrade: the old process still had the pre-upgrade
+        # seat list and refused every publish with "该号未授权").  Kill every
+        # winport process that does not live under THIS program directory.
+        program_norm = os.path.normcase(os.path.abspath(str(self.program)))
+        data_norm = os.path.normcase(os.path.abspath(str(self.data)))
+
+        def _under(path, root):
+            try:
+                return os.path.normcase(os.path.abspath(str(path))).startswith(root)
+            except (OSError, ValueError):
+                return False
+
+        for item in self._python_process_snapshot():
+            try:
+                name = str(item.get("name") or "").lower()
+                if not name.startswith("python"):
+                    continue
+                cmdline = [str(part) for part in (item.get("cmdline") or [])]
+                # 只认常驻代理：``-m winport``（模块名必须精确是 winport）。
+                # ``-m winport.cli <subcommand>`` 是一次性任务，全部跳过。
+                module = ""
+                for idx, part in enumerate(cmdline[:-1]):
+                    if part == "-m" or part == "--module":
+                        module = cmdline[idx + 1].strip().lower()
+                        break
+                if module != "winport":
+                    continue
+                if "-m" in cmdline:
+                    after = cmdline[cmdline.index("-m") + 2:]
+                    positional = []
+                    skip_next = False
+                    for part in after:
+                        if skip_next:
+                            skip_next = False
+                            continue
+                        if part.startswith("--"):
+                            # 选项后面跟的值（--data D:\x）不是位置参数
+                            skip_next = "=" not in part
+                            continue
+                        if not part.startswith("-"):
+                            positional.append(part)
+                    if positional:
+                        # -m winport 后面还有子命令，是一次性任务，不动
+                        continue
+                image = str(item.get("exe") or (cmdline[0] if cmdline else ""))
+                image = image.strip().strip('"')
+                if image and (_under(image, program_norm) or _under(image, data_norm)):
+                    continue
+                paths = [part.strip().strip('"') for part in cmdline
+                         if part and not part.startswith("-")]
+                # --data=<路径> / --program=<路径> 这种写法也要参与归属判断
+                for part in cmdline:
+                    if part.startswith("--") and "=" in part:
+                        value = part.split("=", 1)[1].strip().strip('"')
+                        if value:
+                            paths.append(value)
+                if any(_under(part, program_norm) or _under(part, data_norm)
+                       for part in paths
+                       if (os.path.sep in part or ":" in part)):
+                    continue
+                # 必须由**解释器所在目录**证明它是另一份安装包里的代理：
+                # 只有 image 位于 ...\manju-publish-assistant-<ver>\ 之下、
+                # 且不在本程序目录里，才认定为旧实例；参数里出现同名字样不算。
+                image_dirs = [seg for seg in image.replace("/", "\\").split("\\") if seg]
+                if not any(seg.lower().startswith("manju-publish-assistant")
+                           for seg in image_dirs):
+                    continue
+                pid = int(item.get("pid") or 0)
+                if pid <= 0 or pid == os.getpid():
+                    continue
+                self.log("stopping orphan agent pid=%s image=%s" % (pid, image))
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                               capture_output=True, timeout=20)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                continue
         return stopped, remaining
 
     def _agent_ready_current(self):
@@ -1723,8 +1915,10 @@ class Installer:
             payload = body.encode("ascii")
         except UnicodeEncodeError as exc:
             raise RuntimeError("desktop launcher is not ASCII: %s" % exc)
-        _write_verified_bytes(target, payload, "desktop launcher")
-        self.log("launcher created: %s" % target)
+        _install_start_paths(
+            supervisor=self.program / "scripts" / "run-agent-task.vbs",
+            target=target, payload=payload, autostart=self.step_autostart,
+            log=self.log)
         legacy_cmd = folder / ("%s.cmd" % _LAUNCHER_NAME)
         if legacy_cmd.exists():
             try:
@@ -1739,13 +1933,6 @@ class Installer:
                 self.log("removed stale shortcut: %s" % stale.name)
             except OSError:
                 pass
-        supervisor = self.program / "scripts" / "run-agent-task.vbs"
-        if supervisor.is_file():
-            self.step_autostart(supervisor)
-        else:
-            self.log("WARNING: supervisor missing; autostart falls back to "
-                     "the desktop launcher")
-            self.step_autostart(target)
 
     def step_autostart(self, launcher: Path) -> None:
         """Start with Windows.  HKCU Run needs no admin and no PowerShell."""
@@ -1758,17 +1945,10 @@ class Installer:
         try:
             key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,
                                  r"Software\Microsoft\Windows\CurrentVersion\Run",
-                                 0, winreg.KEY_SET_VALUE)
-            for name in _LEGACY_RUN_VALUES:
-                try:
-                    winreg.DeleteValue(key, name)
-                    self.log("legacy autostart value removed: %s" % name)
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    raise RuntimeError("legacy autostart cleanup failed: %s" % name) from exc
-            winreg.SetValueEx(key, "ManjuPublishAssistant", 0, winreg.REG_SZ,
-                              'wscript.exe //nologo "%s"' % launcher)
+                                 0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE)
+            _update_run_value(winreg, key, "ManjuPublishAssistant",
+                              'wscript.exe //nologo "%s"' % launcher,
+                              _LEGACY_RUN_VALUES, winreg.REG_SZ, self.log)
             winreg.CloseKey(key)
             self.log("autostart registered: %s" % launcher)
         except OSError as exc:

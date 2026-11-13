@@ -251,12 +251,31 @@ def authorized_accounts(license_obj: dict) -> dict:
     return _normalise_accounts(license_obj)
 
 
+def _wildcard_seat(seats: dict, account_id: str):
+    """Activation-issued licences cover every local seat (``*`` / ``平台:*``).
+
+    A customer's account ids are created on their own machine
+    (``env_1:douyin``), so a licence cannot list them in advance.  The
+    vendor signs a wildcard entry instead; matching stays cheapest-first:
+    exact id, then ``<platform>:*``, then ``*``.
+    """
+    platform = account_id.rsplit(':', 1)[-1] if ':' in account_id else None
+    for key in ((f"{platform}:*" if platform else None), "*"):
+        if key and key in seats:
+            entry = dict(seats[key])
+            entry["wildcard"] = key
+            return entry
+    return None
+
+
 def account_authorization(license_obj: dict, account_id: str, *,
                           now=None) -> dict:
     """Per-seat verdict, so one expired/disabled seat never blocks the rest."""
     now = now or datetime.now(timezone.utc)
     seats = _normalise_accounts(license_obj)
     seat = seats.get(account_id)
+    if seat is None:
+        seat = _wildcard_seat(seats, account_id)
     if seat is None:
         return {"account_id": account_id, "authorized": False, "enabled": False,
                 "reason": f"该号未授权（{account_id} 不在授权名单里），请联系我们加号"}

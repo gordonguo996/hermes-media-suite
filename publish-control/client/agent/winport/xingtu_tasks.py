@@ -119,6 +119,16 @@ _ACTION_WORDS = (
 _UNAVAILABLE_WORDS = (
     "\u5df2\u7ed3\u675f", "\u5df2\u4e0b\u7ebf", "\u5df2\u62a2\u5149",
     "\u5df2\u6ee1", "\u65e0\u5269\u4f59", "\u4e0d\u53ef\u6295\u7a3f",
+    # 页面实际显示「无法投稿」「状态异常」，与「不可投稿」不是同一个词。
+    "\u65e0\u6cd5\u6295\u7a3f", "\u72b6\u6001\u5f02\u5e38",
+    "\u5df2\u505c\u6295", "\u65e0\u6cd5\u53c2\u4e0e",
+)
+# 页面把任务状态直接拼在名字后面（如「...-星川任务-2无法投稿」）。比对前先
+# 剥掉这些尾巴，否则同一个任务在计划里和卡片上永远对不上。
+_STATUS_SUFFIX_WORDS = (
+    "\u65e0\u6cd5\u6295\u7a3f", "\u72b6\u6001\u5f02\u5e38", "\u4e0d\u53ef\u6295\u7a3f",
+    "\u5df2\u7ed3\u675f", "\u5df2\u4e0b\u7ebf", "\u5df2\u62a2\u5149",
+    "\u5df2\u6ee1", "\u65e0\u5269\u4f59", "\u5df2\u505c\u6295", "\u65e0\u6cd5\u53c2\u4e0e",
 )
 _EMPTY_SUBMISSION_WORDS = (
     "\u6682\u65e0\u6295\u7a3f", "\u8fd8\u672a\u6295\u7a3f", "\u6682\u65e0\u4f5c\u54c1",
@@ -338,6 +348,37 @@ def normalize_task_name(value) -> str:
     text = re.sub(r"\s+", "", text)
     text = re.sub(r"[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D_]", "-", text)
     return re.sub(r"^\u4efb\u52a1[:\uff1a]?", "", text)
+
+
+def strip_task_status(name) -> str:
+    """Drop the status words the picker pastes onto a task name."""
+    text = normalize_task_name(name)
+    changed = True
+    while changed:
+        changed = False
+        for word in _STATUS_SUFFIX_WORDS:
+            if text.endswith(word) and len(text) > len(word):
+                text = text[: -len(word)]
+                changed = True
+    return text
+
+
+def same_task_variant(left, right) -> bool:
+    """True when two names differ only by a trailing ``-<digits>`` variant.
+
+    The picker re-issues a task with a numeric suffix (``-2``) while an older
+    plan still carries the unsuffixed name.  Only a suffix difference counts:
+    any other edit stays a mismatch so we never attach the wrong order.
+    """
+    a, b = strip_task_status(left), strip_task_status(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if not long.startswith(short + "-"):
+        return False
+    return long[len(short) + 1:].isdigit()
 
 
 def canonical_task_name(family) -> str:
@@ -1647,8 +1688,27 @@ def match_picker_rows(rows, task):
         matches = [row for row in visible if target in unique_order_ids(row)]
         reason = "order_id"
     elif kind == "full_name":
-        matches = [row for row in visible if normalize_task_name(value) in titles(row)]
+        target = normalize_task_name(value)
+        matches = [row for row in visible if target in titles(row)]
         reason = "full_name"
+        if not matches:
+            # 计划里的名字可能比卡片少一个「-2」这样的重发编号；只在差异
+            # 仅限末尾纯数字编号、且唯一命中时才认，绝不扩大到模糊匹配。
+            variants = []
+            for row in visible:
+                if any(same_task_variant(item, target) for item in titles(row)):
+                    variants.append(row)
+            if len(variants) == 1:
+                matches = variants
+                reason = "full_name_variant"
+            elif len(variants) > 1:
+                return {"status": RESOLVE_AMBIGUOUS, "rows": [],
+                        "matches": variants,
+                        "code": "XINGTU_TASK_AMBIGUOUS",
+                        "candidates": [candidate(row, usable=is_usable(row))
+                                       for row in variants[:8]],
+                        "reason": "variant_multiple",
+                        "resolved_identity": None}
     else:
         token = normalize_task_name(value)
         full = normalize_task_name(selector.get("full_name"))
@@ -1681,6 +1741,18 @@ def match_picker_rows(rows, task):
                 "code": "XINGTU_TASK_UNAVAILABLE",
                 "candidates": [candidate(row, usable=False) for row in matches[:8]],
                 "reason": "only_unavailable", "resolved_identity": None}
+
+    # 发布页有时把同一条任务列两遍（同名、都没订单号）。这种情况不是
+    # 真歧义：合并成一条取第一个，否则客户会被永远卡在"同名多条"。
+    if len(usable) > 1:
+        _distinct, _seen = [], set()
+        for _row in usable:
+            _key = (tuple(titles(_row)), tuple(unique_order_ids(_row)))
+            if _key in _seen:
+                continue
+            _seen.add(_key)
+            _distinct.append(_row)
+        usable = _distinct
 
     multi_order = [row for row in usable if len(unique_order_ids(row)) > 1]
     if multi_order or len(usable) > 1:

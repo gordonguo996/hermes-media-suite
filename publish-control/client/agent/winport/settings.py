@@ -17,23 +17,16 @@ DEFAULT_SETTINGS = {
     "customer_id": "",
     "timezone": "Asia/Shanghai",
     "schedule": {
-        "min_lead_minutes": 130,          # Mac parity, do not change
+        "min_lead_minutes": 3,            # 1.2.205: 想什么时候发就什么时候发，只留 3 分钟下限
         "max_horizon_days": 14,           # Mac parity, do not change
-        "avoid_minute_marks": [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55],
+        "avoid_minute_marks": [],
         "gap_min": 5,
         "gap_max": 8,
         # 1.2.20: customer-adjustable publish cadence controls.
-        "windows": [
-            ["07:00", "09:30"],
-            ["11:00", "13:30"],
-            ["17:00", "19:30"],
-            ["20:00", "22:30"]
-        ],
+        # 1.2.205: 取消发布时段限制，全天可发。
+        "windows": [["00:00", "23:59"]],
         "window_entries": [
-            {"id": "morning", "start": "07:00", "end": "09:30", "enabled": True},
-            {"id": "noon", "start": "11:00", "end": "13:30", "enabled": True},
-            {"id": "evening", "start": "17:00", "end": "19:30", "enabled": True},
-            {"id": "night", "start": "20:00", "end": "22:30", "enabled": True}
+            {"id": "allday", "start": "00:00", "end": "23:59", "enabled": True}
         ],
         "max_per_day_per_account": 0,
         "cross_account_gap_minutes": [5, 8],
@@ -94,10 +87,50 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+ALL_DAY_WINDOWS = [["00:00", "23:59"]]
+ALL_DAY_ENTRY = {"id": "allday", "start": "00:00", "end": "23:59", "enabled": True}
+
+
+def _migrate_schedule_anytime(merged):
+    """1.2.205: publishing is allowed at any hour.
+
+    The product decision is "publish whenever the customer wants"; the only
+    remaining rule is a 3-minute floor enforced by validate_window().  Older
+    settings.json files pin four legal bands, a per-5-minute avoid list and a
+    large lead, and hand-edited files may hold nulls, strings or disabled
+    entries.  Normalise the schedule on every load so behaviour never depends
+    on the exact legacy shape, and so no truthiness trap can leave us with an
+    empty window list (which would silently stop all scheduling).
+    """
+    schedule = merged.get("schedule")
+    if not isinstance(schedule, dict):
+        return merged
+    windows = schedule.get("windows")
+    entries = schedule.get("window_entries")
+    raw_lead = schedule.get("min_lead_minutes")
+    entry = entries[0] if isinstance(entries, list) and len(entries) == 1 else None
+    already = (
+        windows == ALL_DAY_WINDOWS
+        and type(raw_lead) is int
+        and raw_lead == 3
+        and schedule.get("avoid_minute_marks") == []
+        and isinstance(entry, dict)
+        and entry.get("enabled") is True
+        and entry.get("id") == "allday"
+        and entry.get("start") == "00:00"
+        and entry.get("end") == "23:59")
+    if not already:
+        schedule["min_lead_minutes"] = 3
+        schedule["avoid_minute_marks"] = []
+        schedule["windows"] = [list(pair) for pair in ALL_DAY_WINDOWS]
+        schedule["window_entries"] = [dict(ALL_DAY_ENTRY)]
+    return merged
+
+
 def load_settings(path):
     raw = read_json(path, default=None)
     if raw is None:
         return copy.deepcopy(DEFAULT_SETTINGS)
     if not isinstance(raw, dict):
         raise ConfigError(f"settings.json must be an object: {path}")
-    return _deep_merge(DEFAULT_SETTINGS, raw)
+    return _migrate_schedule_anytime(_deep_merge(DEFAULT_SETTINGS, raw))

@@ -13,17 +13,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-MIN_LEAD_MINUTES = 130
+MIN_LEAD_MINUTES = 3
 MAX_HORIZON_DAYS = 14
 DEFAULT_GAP_MIN = 5
 DEFAULT_GAP_MAX = 8
 DEFAULT_MAX_PER_DAY_PER_ACCOUNT = 0
-DEFAULT_AVOID_MINUTE_MARKS = tuple(range(0, 60, 5))
+DEFAULT_AVOID_MINUTE_MARKS = ()
 DEFAULT_WINDOWS = (
-    ("07:00", "09:30"),
-    ("11:00", "13:30"),
-    ("17:00", "19:30"),
-    ("20:00", "22:30"),
+    ("00:00", "23:59"),
 )
 DEFAULT_BACKOFF = {"initial_minutes": 30, "multiplier": 2.0, "max_minutes": 360}
 
@@ -232,7 +229,10 @@ def next_slot(now=None, *, settings=None, min_lead_minutes=None):
     tz = resolve_timezone(settings)
     now = _aware(now or datetime.now(timezone.utc)).astimezone(tz)
     lead = int(min_lead_minutes or cfg["min_lead_minutes"])
-    earliest = now + timedelta(minutes=lead)
+    # 1.2.205: never hand back a slot that is already under the lead once the
+    # caller spends a moment before publishing — ceil to the next minute and
+    # keep one extra minute of headroom.
+    earliest = now + timedelta(minutes=lead + 1)
     marks = set(cfg["avoid_minute_marks"])
 
     def _at(day, hhmm):
@@ -245,7 +245,9 @@ def next_slot(now=None, *, settings=None, min_lead_minutes=None):
             hour=0, minute=0, second=0, microsecond=0)
         for start, end in cfg["windows"]:
             low, high = _at(day, start), _at(day, end)
-            cand = max(low, earliest).replace(second=0, microsecond=0)
+            cand = max(low, earliest)
+            if cand.second or cand.microsecond:
+                cand = cand.replace(second=0, microsecond=0) + timedelta(minutes=1)
             if cand.minute in marks:
                 cand += timedelta(minutes=1)
             if cand > high:
@@ -477,13 +479,24 @@ def _pick_simple(count, now, *, window_start=None, window_end=None, seed=None,
     if count <= 0:
         return []
     if window_start is not None or window_end is not None:
-        start = window_start or (now + timedelta(minutes=cfg["min_lead_minutes"]))
+        floor = now + timedelta(minutes=cfg["min_lead_minutes"] + 1)
+        if window_start is not None:
+            window_start = _aware(window_start, "window_start").astimezone(tz)
+        start = max(window_start, floor) if window_start is not None else floor
+        if start.second or start.microsecond:
+            start = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        end = window_end if window_end is not None else start
+        if start > end:
+            return []
         end = window_end or (start + timedelta(days=1))
         return _slots_in_window(count, start, end, rng,
                                 gap_min=cfg["gap_min"],
                                 gap_max=cfg["gap_max"],
                                 avoid_minute_marks=cfg["avoid_minute_marks"])
-    start = now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"])
+    start = now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"] + 1)
+    start = start.replace(second=0, microsecond=0)
+    if start <= now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"]):
+        start += timedelta(minutes=1)
     end = now.astimezone(tz) + timedelta(days=cfg["max_horizon_days"])
     slots = []
     remaining = count
@@ -576,7 +589,12 @@ def _pick_multi(items, now, *, settings=None, seed=None, existing=None):
     for item in auto:
         groups[item["account_id"]].append(item)
 
-    start = now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"])
+    # 1.2.205: same ceiling rule as next_slot — a slot equal to now+lead is
+    # already stale by the time the job dispatches, so keep one extra minute.
+    start = now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"] + 1)
+    start = start.replace(second=0, microsecond=0)
+    if start <= now.astimezone(tz) + timedelta(minutes=cfg["min_lead_minutes"]):
+        start += timedelta(minutes=1)
     horizon = now.astimezone(tz) + timedelta(days=cfg["max_horizon_days"])
     day = start.date()
     last_day = horizon.date()

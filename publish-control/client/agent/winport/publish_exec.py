@@ -131,11 +131,6 @@ ACCOUNT_INFO_URL = "https://creator.douyin.com/web/api/media/user/info/"
 # the driver checks them in order and records exactly which one matched.
 # 1.2.21: zero class-name locators and exact text/attribute semantics.  Any
 # selector in this module is validated by ``publish_guard.validate_selectors``.
-UPLOAD_INPUT_SELECTORS = (
-    "input[type=file][aria-label='\u4e0a\u4f20\u89c6\u9891']",
-    "input[type=file][aria-label='\u9009\u62e9\u89c6\u9891']",
-    "input[type=file][accept='video/*']",
-)
 TITLE_SELECTORS = (
     "input[placeholder*=\"\u4f5c\u54c1\u6807\u9898\"]",
     "input[placeholder='\u4f5c\u54c1\u6807\u9898']",
@@ -465,6 +460,159 @@ def _unique_topic_tokens(values):
     return tokens
 
 
+def _topic_close_enough(expected, observed):
+    left = _topic_token(expected)
+    right = _topic_token(observed)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        return sum(1 for a, b in zip(left, right) if a != b) <= 1
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    for index in range(len(longer)):
+        if longer[:index] + longer[index + 1:] == shorter:
+            return True
+    return False
+
+
+def _topic_token_in_text(token, text):
+    """True only when the token stands alone in the text.
+
+    A plain substring test would treat the half-typed "#温和" as if "#温和草本"
+    had already landed, which would skip the commit and lose the tag.
+    """
+    name = _topic_token(token)
+    body = str(text or "")
+    if not name or not body:
+        return False
+    start = body.find(name)
+    while start >= 0:
+        tail = body[start + len(name):start + len(name) + 1]
+        if tail == "" or tail.isspace():
+            return True
+        start = body.find(name, start + 1)
+    return False
+
+
+def _topic_distance(first, second):
+    one = _topic_token(first)
+    two = _topic_token(second)
+    if one == two:
+        return 0
+    if not one or not two:
+        return 99
+    if len(one) == len(two):
+        return sum(1 for a, b in zip(one, two) if a != b)
+    shorter, longer = (one, two) if len(one) < len(two) else (two, one)
+    if abs(len(one) - len(two)) == 1 and any(
+            longer[:index] + longer[index + 1:] == shorter
+            for index in range(len(longer))):
+        return 1
+    return 99
+
+
+def _strip_topic_label(text, name, limit=1):
+    """Remove standalone occurrences of one chip label, keeping partial words.
+
+    ``limit`` equals the number of chips with that label: a tag that exists
+    both as a chip and as plain text must keep its plain-text copy, otherwise
+    the read-back loses a topic.
+    """
+    body = str(text or "")
+    token = _topic_token(name)
+    if not token or limit <= 0:
+        return body
+    removed = 0
+    start = body.find(token)
+    while start >= 0 and removed < limit:
+        tail_pos = start + len(token)
+        if tail_pos >= len(body) or body[tail_pos].isspace():
+            body = body[:start] + " " + body[tail_pos:]
+            removed += 1
+            start = body.find(token, start + 1)
+        else:
+            start = body.find(token, start + 1)
+    return body
+
+
+def _match_topics(expected, observed):
+    """Pair wanted tags with seen tags one-to-one (maximum cardinality).
+
+    Exact spellings come first in each wanted tag's candidate list, and the
+    pairing is a maximum bipartite matching, so neither a greedy pick nor the
+    exact-locking of one tag can reject a complete pairing.  Returns
+    (pairs, missing, unexpected); unexpected are observed tags left over.
+    """
+    pool = [str(item or "").strip() for item in (observed or []) if str(item or "").strip()]
+    wanted = [str(item or "").strip() for item in (expected or []) if str(item or "").strip()]
+    adjacency = {}
+    for index, want in enumerate(wanted):
+        exact = [pos for pos, seen in enumerate(pool)
+                 if _topic_token(seen) == _topic_token(want)]
+        near = [pos for pos, seen in enumerate(pool)
+                if pos not in exact and _topic_distance(want, seen) <= 1]
+        adjacency[index] = exact + near
+    owner = {}
+
+    def _augment(index, visited):
+        for pos in adjacency.get(index, []):
+            if pos in visited:
+                continue
+            visited.add(pos)
+            if pos not in owner or _augment(owner[pos], visited):
+                owner[pos] = index
+                return True
+        return False
+
+    for index in range(len(wanted)):
+        _augment(index, set())
+
+    # Maximum cardinality is settled; now nudge the pairing towards exact
+    # spellings by swapping a want out of a near-miss slot into its exact slot
+    # whenever the displaced want can take the near-miss slot itself.
+    def _exact_pairs(mapping):
+        return sum(1 for pos, index in mapping.items()
+                   if _topic_token(pool[pos]) == _topic_token(wanted[index]))
+
+    best = _exact_pairs(owner)
+    for _round in range(len(wanted) + 1):
+        swapped = False
+        for pos, index in list(owner.items()):
+            if _topic_token(pool[pos]) == _topic_token(wanted[index]):
+                continue
+            for exact_pos in range(len(pool)):
+                if _topic_token(pool[exact_pos]) != _topic_token(wanted[index]):
+                    continue
+                holder = owner.get(exact_pos)
+                if holder is None or holder == index:
+                    continue
+                if _topic_distance(wanted[holder], pool[pos]) > 1:
+                    continue
+                trial = dict(owner)
+                trial[exact_pos] = index
+                trial[pos] = holder
+                score = _exact_pairs(trial)
+                if score > best:
+                    owner = trial
+                    best = score
+                    swapped = True
+                    break
+            if swapped:
+                break
+        if not swapped:
+            break
+
+    pairs = [(_topic_token(wanted[index]), _topic_token(pool[pos]))
+             for pos, index in sorted(owner.items(), key=lambda item: item[1])]
+    paired = set(owner.values())
+    missing = [_topic_token(wanted[i]) for i in range(len(wanted)) if i not in paired]
+    unexpected = [_topic_token(item) for pos, item in enumerate(pool) if pos not in owner]
+    return pairs, missing, unexpected
+
+
 def _description_text_matches(actual, expected_body, expected_topics):
     """Accept the body alone (chip UI) or body plus plain-text topics."""
     actual_text = _normalize_form_text(actual)
@@ -476,12 +624,8 @@ def _description_text_matches(actual, expected_body, expected_topics):
     rest = actual_text[len(body):].strip()
     if not rest:
         return True
-    for topic in expected_topics or ():
-        token = _topic_token(topic)
-        if not token or token not in rest:
-            return False
-        rest = rest.replace(token, " ", 1)
-    return not rest.strip()
+    _, missing, unexpected = _match_topics(expected_topics or (), rest.split())
+    return not missing and not unexpected
 
 
 def _compact_text(value):
@@ -1201,107 +1345,6 @@ def _snapshot_timeout_result(state, selectors):
         "frame_hits": state.get("frame_hits", []),
         "query_errors": state.get("query_errors", []),
     }
-
-
-def _poll_upload_input(page, selectors, *, started, timeout, progress, state,
-                       stop_event):
-    """Poll inputs on the calling thread with a hard wall-clock deadline."""
-    primary_end = started + max(0.05, float(timeout) * 0.6)
-    deadline = started + float(timeout)
-    while not stop_event.is_set():
-        try:
-            snapshot = _upload_input_frame_snapshot(
-                page, selectors, hard_deadline=deadline)
-        except Exception as exc:
-            snapshot = {
-                "selector": ", ".join(selectors), "count": 0,
-                "frames": 0, "iframes": 0, "frame_hits": [],
-                "query_errors": [{"frame_index": -1,
-                                  "error": type(exc).__name__ + ": " + str(exc)}],
-            }
-        elapsed = round(max(0.0, time.monotonic() - started), 2)
-        snapshot.update({"phase": "primary", "elapsed": elapsed})
-        state.clear()
-        state.update(snapshot)
-        progress("upload.input.lookup.poll", **snapshot)
-        if snapshot["count"] == 1:
-            hit = snapshot["frame_hits"][0]
-            return {
-                "found": True,
-                "selector": snapshot["selector"],
-                "count": 1,
-                "frame_index": hit["frame_index"],
-                "frame_url": hit["frame_url"],
-                "frames": snapshot["frames"],
-                "iframes": snapshot["iframes"],
-                "fallback": False,
-                "timeout": False,
-                "elapsed": elapsed,
-            }
-        if snapshot["count"] > 1:
-            return {
-                "found": False,
-                "ambiguous": True,
-                "timeout": False,
-                "elapsed": elapsed,
-                "selector": snapshot["selector"],
-                **{key: snapshot[key] for key in
-                   ("count", "frames", "iframes", "frame_hits",
-                    "query_errors")},
-            }
-        if time.monotonic() >= primary_end:
-            break
-        stop_event.wait(min(0.25, max(0.0, primary_end - time.monotonic())))
-
-    while not stop_event.is_set():
-        if time.monotonic() >= deadline:
-            break
-        try:
-            snapshot = _fallback_upload_input_snapshot(
-                page, hard_deadline=deadline)
-        except Exception as exc:
-            snapshot = {
-                "selector": "input[type=file][accept contains video]",
-                "count": 0, "file_inputs": 0, "frames": 0, "iframes": 0,
-                "frame_hits": [],
-                "query_errors": [{"frame_index": -1,
-                                  "error": type(exc).__name__ + ": " + str(exc)}],
-            }
-        elapsed = round(max(0.0, time.monotonic() - started), 2)
-        snapshot.update({"phase": "fallback", "elapsed": elapsed})
-        state.clear()
-        state.update(snapshot)
-        progress("upload.input.lookup.poll", **snapshot)
-        if snapshot["count"] == 1:
-            hit = snapshot["frame_hits"][0]
-            return {
-                "found": True,
-                "selector": snapshot["selector"],
-                "count": 1,
-                "frame_index": hit["frame_index"],
-                "frame_url": hit["frame_url"],
-                "position": hit.get("position", 0),
-                "frames": snapshot["frames"],
-                "iframes": snapshot["iframes"],
-                "fallback": True,
-                "timeout": False,
-                "elapsed": elapsed,
-            }
-        if snapshot["count"] > 1:
-            return {
-                "found": False,
-                "ambiguous": True,
-                "timeout": False,
-                "elapsed": elapsed,
-                "selector": snapshot["selector"],
-                **{key: snapshot[key] for key in
-                   ("count", "frames", "iframes", "frame_hits",
-                    "query_errors")},
-            }
-        if time.monotonic() >= deadline:
-            break
-        stop_event.wait(min(0.25, max(0.0, deadline - time.monotonic())))
-    return _snapshot_timeout_result(state, selectors)
 
 
 def _page_body_text(page):
@@ -3033,7 +3076,7 @@ class VerificationQueryError(RuntimeError):
 def assert_selector_policy():
     """Raise at build/test time when a selector regresses to class/fuzzy text."""
     problems = validate_selectors((
-        *UPLOAD_INPUT_SELECTORS, *TITLE_SELECTORS, *TOPIC_SELECTORS,
+        *TITLE_SELECTORS, *TOPIC_SELECTORS,
         *COVER_BUTTON_SELECTORS, *COVER_INPUT_SELECTORS,
         *PUBLISH_BUTTON_SELECTORS, *UPLOAD_PROGRESS_SELECTORS,
         *TRANSCODE_DONE_SELECTORS, *EDIT_LINK_SELECTORS,
@@ -3280,21 +3323,22 @@ class PlaywrightDriver:
         return contexts[0]
 
     def _find_page(self):
-        """Reuse a real creator page; never silently drive an unrelated tab."""
+        """每次任务都在同一个（已登录的）context 里开一个全新页。
+
+        不复用现有页面：上一轮可能把页停在「发布配置页」且带着旧视频，
+        复用它会让上传步骤对着不可交互的输入框干等 30 秒超时。
+        也不去关别人开的页：本轮自己的页在 ``close()`` 里关掉。
+        """
         contexts = getattr(self._browser, "contexts", None) or []
-        if contexts:
-            context = contexts[0]
-            pages = list(context.pages or [])
-            page, info = _select_creator_page(
-                pages, preferred_url=DOUYIN_UPLOAD_URL)
-            self._progress("page.select", **info)
-            if page is None:
-                self._progress("page.select.new_page", **info)
-                return context.new_page()
-            if info.get("multiple_creator_pages"):
-                self._progress("page.select.multiple", **info)
-            return page
-        return self._browser.new_page()
+        if not contexts:
+            raise GateRed("\u6ca1\u6709\u53ef\u7528\u7684\u6d4f\u89c8\u5668 context\uff0c\u65e0\u6cd5\u627f\u63a5\u767b\u5f55\u6001")
+        try:
+            page = contexts[0].new_page()
+        except Exception as exc:
+            # 不能退到 browser.new_page()（新 context 没有账号 cookie）
+            raise GateRed("\u65b0\u5efa\u53d1\u5e03\u9875\u5931\u8d25\uff1a" + type(exc).__name__ + ": " + str(exc))
+        self._progress("page.new_clean_page")
+        return page
 
     def _close_duplicate_creator_pages(self):
         """Keep exactly one creator.douyin.com tab before a fill starts.
@@ -3313,7 +3357,8 @@ class PlaywrightDriver:
             return result
 
         creator_pages = [(index, page) for index, page in enumerate(pages)
-                         if _is_creator_page_url(_page_url_value(page))]
+                         if page is getattr(self, "_page", None)
+                         and _is_creator_page_url(_page_url_value(page))]
         result["creator_pages"] = [_page_url_value(page)
                                    for _index, page in creator_pages]
         if len(creator_pages) <= 1:
@@ -3365,7 +3410,8 @@ class PlaywrightDriver:
         current = getattr(self, "_page", None)
         for host in tuple(hosts or self.AUTOMATION_HOSTS):
             same = [page for page in pages
-                    if _host_of_url(_page_url_value(page)) == host]
+                    if page is current
+                    and _host_of_url(_page_url_value(page)) == host]
             if len(same) <= 1:
                 if same:
                     result["kept"][host] = _page_url_value(same[0])
@@ -3396,6 +3442,13 @@ class PlaywrightDriver:
         self.finish_publish_observation()
         try:
             self._close_duplicate_site_pages()
+        except Exception:
+            pass
+        try:
+            page = getattr(self, "_page", None)
+            if page is not None and not page.is_closed():
+                page.close()
+                self._progress("page.closed_own_page")
         except Exception:
             pass
         try:
@@ -3589,93 +3642,91 @@ class PlaywrightDriver:
             value = 20.0
         return min(60.0, max(0.1, value))
 
-    def _lookup_upload_input_via_driver(self, started, timeout, state, stop):
-        """Find the upload input on this thread's only Playwright connection.
+    def _wait_usable_upload_input(self, timeout=60.0,
+                                  stop_event=None):
+        """Poll every frame for a usable video file input, never by position.
 
-        This method is deliberately synchronous.  The previous CDP helper
-        opened a second Playwright client in a daemon thread; both clients
-        wrote the same driver pipe and crashed with EPIPE.  Every query below
-        therefore runs on the caller's (driver-owning) thread.
+        Client evidence (2026-11-10, douyin creator):
+          * clean /content/upload page has exactly ONE input[type=file]
+            (accept=video, enabled, 1x1px inside the drop zone);
+          * /content/post/video config page has TWO inputs
+            (index 0 = cover image, index 1 = video).
+        Picking by index therefore either waits forever for an index that does
+        not exist or grabs the cover input. Filter by accept+enabled instead;
+        if several survive, prefer the only visible one, otherwise fail closed.
         """
-        timeout = max(0.05, float(timeout))
-        deadline = started + timeout
-        primary_limit = max(0.05, timeout * 0.6)
-        frames = _page_frames(self._page)
-        state.update({
-            "phase": "primary",
-            "selector": ", ".join(UPLOAD_INPUT_SELECTORS),
-            "count": None,
-            "frames": len(frames),
-            "iframes": max(0, len(frames) - 1),
-            "frame_hits": [],
-        })
-        self._progress("upload.input.lookup.poll", **state)
-
-        # Main-frame fast path.  Tests and the real page both exercise this
-        # exact probe; it returns as soon as the unique locator exists.
-        remaining = max(0.0, min(primary_limit,
-                                 deadline - time.monotonic()))
-        locator, used = self._unique_locator(
-            UPLOAD_INPUT_SELECTORS, timeout=remaining, visible=False)
-        if locator is not None:
-            state.update({"selector": used, "count": 1})
-            return {
-                "found": True, "selector": used, "count": 1,
-                "locator": locator, "frame_index": 0, "frames": 1,
-                "iframes": 0, "fallback": False, "timeout": False,
+        budget = max(float(timeout or 0.0), 1.0)
+        deadline = time.monotonic() + budget
+        snapshot = {}
+        while True:
+            frames = _page_frames(self._page)
+            candidates = []
+            for frame_index, frame in enumerate(frames):
+                try:
+                    items = frame.locator("input[type=file]")
+                    total = items.count()
+                except Exception:
+                    continue
+                for index in range(total):
+                    node = items.nth(index)
+                    try:
+                        accept = str(node.get_attribute("accept") or "").lower()
+                    except Exception:
+                        continue
+                    if "video" not in accept:
+                        continue
+                    try:
+                        if not node.is_enabled():
+                            continue
+                    except Exception:
+                        continue
+                    try:
+                        box = node.bounding_box()
+                    except Exception:
+                        box = None
+                    visible = bool(box and box.get("width", 0) > 0
+                                   and box.get("height", 0) > 0)
+                    candidates.append({"frame": frame_index, "index": index,
+                                       "node": node, "visible": visible,
+                                       "accept": accept[:48]})
+            snapshot = {
+                "frames": len(frames),
+                "candidates": [{"frame": item["frame"],
+                                "index": item["index"],
+                                "visible": item["visible"],
+                                "accept": item["accept"]}
+                               for item in candidates],
             }
-        if stop.is_set():
-            return {
-                "found": False, "selector": used, "count": 0,
-                "frames": len(frames), "iframes": max(0, len(frames) - 1),
-                "frame_hits": [], "timeout": False,
-            }
-        if time.monotonic() >= deadline:
-            state.update({"phase": "primary", "selector": used})
-            return _snapshot_timeout_result(state, UPLOAD_INPUT_SELECTORS)
-
-        # Child-frame scan plus the generic file-input fallback.  Both helpers
-        # skip detached/throwing/slow frames and obey the original deadline.
-        return _poll_upload_input(
-            self._page, UPLOAD_INPUT_SELECTORS, started=started,
-            timeout=timeout, progress=self._progress, state=state,
-            stop_event=stop)
-
-    def _resolve_upload_input(self, result):
-        """Resolve serializable lookup facts on this thread's page."""
-        locator = result.get("locator")
-        if locator is not None:
-            return locator, result["selector"]
-        page_url = str(result.get("page_url") or "")
-        if page_url and page_url != self._safe_page_url():
-            self._fail("upload.input.lookup 查询页与当前页不一致，拒绝继续",
-                       step="upload")
-        frames = _page_frames(self._page)
-        frame = None
-        index = int(result.get("frame_index", 0) or 0)
-        frame_url = str(result.get("frame_url") or "")
-        if 0 <= index < len(frames):
-            if not frame_url or _frame_url_value(frames[index]) == frame_url:
-                frame = frames[index]
-        if frame is None and frame_url:
-            matches = [item for item in frames
-                       if _frame_url_value(item) == frame_url]
-            if len(matches) == 1:
-                frame = matches[0]
-        if frame is None:
-            self._fail("upload.input.lookup 后目标 frame 已变化", step="upload")
-        if result.get("fallback"):
-            position = int(result.get("position", 0) or 0)
-            item = frame.locator("input[type=file]").nth(position)
-            try:
-                accept = item.get_attribute("accept") or ""
-            except Exception as exc:
-                self._fail("upload.input.lookup 兜底控件回读失败："
-                           + type(exc).__name__ + ": " + str(exc), step="upload")
-            if "video" not in str(accept).lower():
-                self._fail("upload.input.lookup 兜底控件已变化，拒绝猜测", step="upload")
-            return item, result["selector"]
-        return frame.locator(result["selector"]).nth(0), result["selector"]
+            if len(candidates) == 1:
+                self._progress("upload.input.scanned", total=1,
+                               picked=candidates[0]["index"])
+                return candidates[0]["node"], "input[type=file]", snapshot
+            if len(candidates) > 1:
+                visible = [item for item in candidates if item["visible"]]
+                if len(visible) == 1:
+                    self._progress("upload.input.scanned",
+                                   total=len(candidates),
+                                   picked=visible[0]["index"],
+                                   visible_only=True)
+                    return visible[0]["node"], "input[type=file]", snapshot
+                self._progress("upload.input.ambiguous", **snapshot)
+                self._fail("\u9875\u9762\u4e0a\u6709\u591a\u4e2a\u53ef\u7528\u7684"
+                           "\u89c6\u9891\u4e0a\u4f20\u6846\uff0c\u4e0d\u731c\u662f"
+                           "\u54ea\u4e00\u4e2a\uff1b\u8fd9\u6b21\u6ca1\u4e0a\u4f20"
+                           "\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u6539\u5230\u51e0"
+                           "\u5206\u949f\u540e\u91cd\u53d1\u3002", step="upload")
+            if stop_event is not None and stop_event.is_set():
+                self._fail("\u4e0a\u4f20\u6b65\u9aa4\u5df2\u88ab\u53d6\u6d88",
+                           step="upload")
+            if time.monotonic() >= deadline:
+                self._progress("upload.input.none_usable", **snapshot)
+                self._fail("\u9875\u9762\u7684\u89c6\u9891\u4e0a\u4f20\u6846\u8fd8"
+                           "\u6ca1\u5c31\u7eea\uff08\u5f53\u4e0b\u4e0d\u53ef\u7528\uff09"
+                           "\uff0c\u8fd9\u6b21\u6ca1\u4e0a\u4f20\u6210\u529f\uff0c"
+                           "\u5df2\u81ea\u52a8\u6539\u5230\u51e0\u5206\u949f\u540e"
+                           "\u91cd\u53d1\u3002", step="upload")
+            # wait-ok: poll
+            time.sleep(0.5)
 
     def _upload_navigation_timeout_seconds(self):
         settings = getattr(self, "settings", None) or {}
@@ -5420,51 +5471,9 @@ class PlaywrightDriver:
                           for page in (self._context().pages or [])]
         except Exception:
             open_pages = [self._safe_page_url()]
-        self._progress("upload.input.lookup", timeout_seconds=lookup_timeout,
-                       selectors=list(UPLOAD_INPUT_SELECTORS),
+        self._progress("upload.input.scan.start", timeout_seconds=lookup_timeout,
                        pages=open_pages)
-        started = time.monotonic()
-        state = {}
-        stop = threading.Event()
-        try:
-            lookup = self._lookup_upload_input_via_driver(
-                started, lookup_timeout, state, stop) or {}
-        except GateRed:
-            raise
-        except Exception as exc:
-            if type(exc).__name__ == "TimeoutError":
-                lookup = {"found": False, "timeout": True}
-            else:
-                self._fail("upload.input.lookup 失败："
-                           + type(exc).__name__ + ": " + str(exc),
-                           step="upload")
-        if lookup.get("timeout"):
-            snapshot = dict(state)
-            self._progress(
-                "upload.input.lookup.timeout",
-                timeout_seconds=lookup_timeout,
-                selector=snapshot.get("selector"),
-                count=snapshot.get("count"),
-                phase=snapshot.get("phase"),
-                frames=snapshot.get("frames"),
-                iframes=snapshot.get("iframes"),
-                frame_hits=snapshot.get("frame_hits"),
-                query_errors=snapshot.get("query_errors"),
-            )
-            self._fail("upload.input.lookup \u8d85\u65f6", step="upload")
-        if not lookup.get("found"):
-            self._progress(
-                "upload.input.not_found",
-                selector=lookup.get("selector"),
-                count=lookup.get("count"),
-                frames=lookup.get("frames"),
-                iframes=lookup.get("iframes"),
-                frame_hits=lookup.get("frame_hits"),
-                detail="no input in main frame / frames: %s" % lookup.get("frames"),
-            )
-            self._fail("\u627e\u4e0d\u5230\u552f\u4e00\u89c6\u9891\u6587\u4ef6\u8f93\u5165\uff1b\u5f53\u524d\u7248\u672c\u4e0d\u731c\u6d4b\u901a\u7528\u6587\u4ef6\u63a7\u4ef6",
-                       step="upload")
-        locator, selector = self._resolve_upload_input(lookup)
+        locator, selector, scan = self._wait_usable_upload_input(lookup_timeout)
         self._progress("upload.input.found", selector=selector)
         video_baseline = _video_preview_baseline(self._page)
         if video_baseline is None:
@@ -5827,29 +5836,24 @@ class PlaywrightDriver:
         if body_loc is None and _normalize_form_text(expected_body):
             self._fail("\u63cf\u8ff0\u56de\u8bfb\u4e0d\u4e00\u81f4")
 
-        actual_topics = self._page.locator("[data-topic]").evaluate_all(
-            "els => els.map(el => el.getAttribute('data-topic'))")
-        mention_topics = self._page.locator("[data-mention]").evaluate_all(
-            "els => els.map(el => el.getAttribute('data-mention'))")
-        mention_texts = self._page.locator("[data-mention]").evaluate_all(
-            "els => els.map(el => el.textContent || '')")
-        chip_topic_tokens = _unique_topic_tokens(
-            list(actual_topics or ()) + list(mention_topics or ())
-            + list(mention_texts or ()))
-        text_topic_tokens = _unique_topic_tokens(
-            _topic_tokens_in_text(actual_body)
-            + _topic_tokens_in_text(" ".join(mention_texts or ()))
-            + list(mention_texts or ()))
-        # A topic may render as a chip or stay as plain "#tag" text: Douyin
-        # converts them asynchronously, so requiring every tag to be a chip
-        # (or requiring the chip set to equal the expected set exactly) fails
-        # a publish that is in fact correct.  Require every expected tag to be
-        # visible in one of the two forms, and reject only an unexpected chip.
-        observed_topic_tokens = set(chip_topic_tokens) | set(text_topic_tokens)
-        missing_topics = [token for token in expected_topic_tokens
-                          if token not in observed_topic_tokens]
-        unexpected_chips = [token for token in chip_topic_tokens
-                            if token not in expected_topic_tokens]
+        chip_topic_tokens = [_topic_token(item) for item in self._topic_chip_texts()]
+        chip_topic_tokens = [item for item in chip_topic_tokens if item]
+        # A chip label also shows up in the editor innerText, so strip it there
+        # before collecting plain-text tags (each tag must count once).
+        body_text = str(actual_body or "")
+        chip_counts = {}
+        for token in chip_topic_tokens:
+            chip_counts[token] = chip_counts.get(token, 0) + 1
+        for token, count in chip_counts.items():
+            body_text = _strip_topic_label(body_text, token, count)
+        text_topic_tokens = [token for token in _topic_tokens_in_text(body_text) if token]
+        observed_topic_tokens = chip_topic_tokens + text_topic_tokens
+        # Douyin rewrites a tag to the canonical one when it recognises a typo,
+        # so a one-character difference is a correction, not a mismatch.
+        pairs, missing_topics, _unused = _match_topics(
+            expected_topic_tokens, observed_topic_tokens)
+        _chip_pairs, _planned_without_chip, unexpected_chips = _match_topics(
+            expected_topic_tokens, chip_topic_tokens)
         if expected_topic_tokens and (missing_topics or unexpected_chips):
             self._progress("form.topics.mismatch",
                            expected=expected_topic_tokens,
@@ -5858,6 +5862,11 @@ class PlaywrightDriver:
                            missing=missing_topics,
                            unexpected=unexpected_chips)
             self._fail("\u8bdd\u9898\u56de\u8bfb\u4e0d\u4e00\u81f4")
+        else:
+            corrected = sorted({(wanted, seen) for wanted, seen in pairs
+                                if wanted != seen})
+            if corrected:
+                self._progress("form.topics.corrected", corrected=corrected)
         if not _description_text_matches(actual_body, expected_body,
                                          expected_topics):
             self._fail("\u63cf\u8ff0\u56de\u8bfb\u4e0d\u4e00\u81f4")
@@ -5922,24 +5931,151 @@ class PlaywrightDriver:
                        topics=len(piece.get("topics") or []))
         self._upload_heartbeat()
 
+    def _topic_chip_texts(self):
+        try:
+            values = self._page.locator("[data-topic], [data-mention]").evaluate_all(
+                "els => els.map(el => el.getAttribute('data-topic') "
+                "|| el.getAttribute('data-mention') || el.textContent || '')")
+        except Exception:
+            return []
+        return [str(v).strip() for v in (values or []) if str(v).strip()]
+
+    def _plain_editor_text(self, editor):
+        """Editor text with every chip label removed (chips are counted apart)."""
+        text = self._editor_text(editor)
+        try:
+            chips = self._topic_chip_texts()
+        except Exception:
+            chips = []
+        counts = {}
+        for chip in chips:
+            counts[chip] = counts.get(chip, 0) + 1
+        for chip, count in counts.items():
+            text = _strip_topic_label(text, chip, count)
+        return text
+
+    def _topic_present(self, editor, topic):
+        name = _topic_name(topic)
+        if not name:
+            return ""
+        for chip in self._topic_chip_texts():
+            if _topic_close_enough(name, chip):
+                return "chip"
+        if _topic_token_in_text(name, self._plain_editor_text(editor)):
+            return "text"
+        return ""
+
+    def _new_chip(self, before, topic):
+        """The chip this very entry produced, or "" when nothing is new."""
+        name = _topic_name(topic)
+        if not name:
+            return ""
+        try:
+            chips = self._topic_chip_texts()
+        except Exception:
+            return ""
+        outstanding = {}
+        for chip in (before or []):
+            outstanding[chip] = outstanding.get(chip, 0) + 1
+        for chip in reversed(chips):
+            if not _topic_close_enough(name, chip):
+                continue
+            if outstanding.get(chip, 0) > 0:
+                outstanding[chip] -= 1
+                continue
+            return chip
+        return ""
+
+    def _wait_topic_chip(self, editor, topic, before=None, timeout=None):
+        """Wait until THIS entry became a chip (an older chip does not count)."""
+        limit = self._topic_conversion_timeout() if timeout is None else timeout
+        deadline = time.monotonic() + max(0.0, limit)
+        while True:
+            chip = self._new_chip(before, topic)
+            if chip:
+                return chip
+            if time.monotonic() >= deadline:
+                return ""
+            self.humanizer.poll_pause()
+
+    def _wait_topic_present(self, editor, topic, timeout=None):
+        limit = self._topic_conversion_timeout() if timeout is None else timeout
+        deadline = time.monotonic() + max(0.0, limit)
+        while True:
+            found = self._topic_present(editor, topic)
+            if found:
+                return found
+            if time.monotonic() >= deadline:
+                return ""
+            self.humanizer.poll_pause()
+
     def _add_topics(self, topics):
+        """Enter every topic, then confirm it actually landed in the editor.
+
+        Field failure (2026-11-11): four topics were requested, only the first
+        became a chip and the publish then failed the read-back with three
+        missing tags.  Each tag is now committed and verified on its own, and a
+        tag that does not stick is retried once before the publish continues.
+        """
         self.topic_modes = []
         self.topic_mode = "none"
+        self.topic_missing = []
         if not topics:
             return self.topic_mode
-        editor, _ = self._unique_locator(BODY_SELECTORS, timeout=10)
-        if editor is None:
-            self._fail("\u627e\u4e0d\u5230\u4f5c\u54c1\u63cf\u8ff0\u7f16\u8f91\u5668")
-        for index, topic in enumerate(topics):
-            if not self._focus_editor_end(editor):
-                self.topic_modes.append("text")
+        pending = [t for t in topics if _topic_token(t)]
+        claimed = []
+        self._topic_claimed = claimed
+        for _attempt in (1, 2):
+            if not pending:
+                break
+            missing = []
+            for topic in pending:
+                # A converted chip re-renders the editor, so re-acquire it.
+                try:
+                    editor, _ = self._unique_locator(BODY_SELECTORS, timeout=5)
+                except Exception:
+                    editor = None
+                if editor is None:
+                    missing.append(topic)
+                    continue
+                token = _topic_token(topic)
+                try:
+                    chips = [_topic_token(item) for item in self._topic_chip_texts()]
+                except Exception:
+                    chips = []
+                # Exact chip comparison here: a near-miss chip (#草本 vs #草木)
+                # must not be mistaken for this tag and skipped.
+                if chips.count(token) > claimed.count(token):
+                    self.topic_modes.append("chip")
+                    claimed.append(token)
+                    continue
+                try:
+                    if _topic_token_in_text(token, self._plain_editor_text(editor)):
+                        # Plain text from an earlier pass is already on the page.
+                        self.topic_modes.append("text")
+                        continue
+                except Exception:
+                    pass
+                if not self._focus_editor_end(editor):
+                    missing.append(topic)
+                    continue
+                self._ensure_editor_separator(editor, force=True)
+                mode = self._select_topic_or_fallback(editor, topic)
+                if mode and mode != "text":
+                    self.topic_modes.append("chip")
+                    claimed.append(_topic_token(mode))
+                elif mode == "text":
+                    self.topic_modes.append("text")
+                else:
+                    self.topic_modes.append("")
                 self.humanizer.step_pause(reason="\u8bdd\u9898\u8f93\u5165")
-                continue
-            self._ensure_editor_separator(editor, force=index > 0)
-            mode = self._select_topic_or_fallback(editor, topic)
-            self.topic_modes.append(mode)
-            self.humanizer.step_pause(reason="\u8bdd\u9898\u8f93\u5165")
-        self.topic_mode = ("text" if "text" in self.topic_modes else "chip")
+                if not mode:
+                    missing.append(topic)
+            pending = missing
+        self.topic_missing = [_topic_token(t) for t in pending]
+        if self.topic_missing:
+            self._progress("form.topics.missing", missing=list(self.topic_missing))
+        self.topic_mode = "text" if "text" in self.topic_modes else "chip"
         return self.topic_mode
 
     def _editor_text(self, editor):
@@ -6006,16 +6142,40 @@ class PlaywrightDriver:
             self.humanizer.poll_pause()
 
     def _select_topic_or_fallback(self, editor, topic):
-        """Type the tag by hand ("#name" + space) and let Douyin chip it."""
+        """Type the tag by hand ("#name") and commit it with Space or Enter."""
         text = _topic_token(topic) or str(topic or "").strip()
         if not text:
-            return "text"
-        before_count = self._topic_chip_count(editor)
+            return ""
+        try:
+            before = self._topic_chip_texts()
+        except Exception:
+            before = []
         self.humanizer.type_into(self._page, text)
-        self._page.keyboard.press("Space")
-        if before_count is None:
-            return "text"
-        return "chip" if self._wait_for_topic_chip(editor, before_count) else "text"
+        try:
+            self._page.keyboard.press("Space")
+        except Exception:
+            pass
+        chip = self._wait_topic_chip(editor, topic, before)
+        if chip:
+            return chip
+        # The text is still raw, so Enter may be the only way to convert it.
+        try:
+            still_typing = _topic_token_in_text(text, self._plain_editor_text(editor))
+        except Exception:
+            still_typing = False
+        if still_typing:
+            try:
+                editor.press("Enter")
+            except Exception:
+                still_typing = False
+            if still_typing:
+                chip = self._wait_topic_chip(editor, topic, before)
+                if chip:
+                    return chip
+        try:
+            return "text" if _topic_token_in_text(text, self._plain_editor_text(editor)) else ""
+        except Exception:
+            return ""
 
     def _cover_wait_seconds(self):
         try:

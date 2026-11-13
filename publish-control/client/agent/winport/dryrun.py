@@ -184,7 +184,7 @@ def build_preview(plan: dict, *, envs=None, channels=None, settings=None,
         try:
             parsed = _parse_time(schedule_at)
             min_lead = int((settings.get("schedule") or {}).get(
-                "min_lead_minutes", 130))
+                "min_lead_minutes", 3))
             max_horizon = int((settings.get("schedule") or {}).get(
                 "max_horizon_days", 14))
             ok, reason = validate_window(parsed, now, min_lead_minutes=min_lead,

@@ -333,7 +333,11 @@ def _restart_agentpoll(layout, logger, poller_slot, start_poller=None):
     take effect.  Every failure is returned and written as a visible error.
     """
     def _default_start(layout_arg, logger_arg):
-        return _start_agentpoll(layout_arg, logger_arg, start_remote=False)
+        # Always bring the operator channel up with the poller.  It used to be
+        # skipped here to avoid duplicate threads, which left brand-new
+        # installs unable to collect material lists after activation;
+        # start_remote_agent is idempotent now, so pass start_remote=True.
+        return _start_agentpoll(layout_arg, logger_arg, start_remote=True)
 
     with _AGENTPOLL_RESTART_LOCK:
         old = poller_slot.get("poller")

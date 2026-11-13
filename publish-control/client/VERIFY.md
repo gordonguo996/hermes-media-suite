@@ -1,8 +1,8 @@
-﻿# 1.2.200 实现验证记录
+﻿# 1.2.203 实现验证记录
 
 本轮聚焦 1.2.199 复核的客户端 P1/P2：先处理 `control_error` 再判断凭据是否变化，只有服务端明确 `rotated=false` 才提示换新码；写盘前校验 `binding_epoch` 单调，并把同码 exchange 与写盘放入同一把锁；停止中的 poller 不写 `error`，连续 2 次 poll 失败才报错，正常/异常退出分别写 `disabled`/`error`；面板失败时刷新状态行，超时时区分接入服务是否已停止；README 与本节同步「同码可重兑并换发新凭据」语义；包内 `tools/static_verify.py` 缺少 devsign/receipt_fixture 时降级跳过。实现与 Linux 定向自检不代表 Windows 实机验收或独立终审。
 
-当前源码分支：VERSION=1.2.200。MANIFEST.json、PACKAGE_BINDING.json、SHA256SUMS.txt 由打包阶段按 1.2.200 统一重算；PACKAGE_BINDING.json 按自绑定设计不计入 SHA256SUMS，其完整性由 MANIFEST 中的规范化自绑定摘要校验（该字段单独定义、非文件原始哈希）。本记录随源码分支交付，打包后清单覆盖本文件自身；任何后续改动都必须重算清单后才能再打包。未上传客户机。
+当前源码分支：VERSION=1.2.203。MANIFEST.json、PACKAGE_BINDING.json、SHA256SUMS.txt 由打包阶段按 1.2.203 统一重算；PACKAGE_BINDING.json 按自绑定设计不计入 SHA256SUMS，其完整性由 MANIFEST 中的规范化自绑定摘要校验（该字段单独定义、非文件原始哈希）。本记录随源码分支交付，打包后清单覆盖本文件自身；任何后续改动都必须重算清单后才能再打包。未上传客户机。
 
 面板仅在实际 PID、owner program/version 与当前包一致时保留 owner，多余 supervisor 不使合法 owner 失效；安装阶段同版本 owner 也先停止并确认退出；旧 owner 先停止并确认退出，新 VBS 在原子 guard 下重试取得锁，覆盖原有 30 秒锁保护期。未知 owner 或异常遗留 guard 仍须人工核实，不自动删除。安装统一失败出口追加原始异常类型、owner 原文与解析、锁状态和日志尾部；面板入口及桌面启动器显式加入包根。已在 Linux /tmp、非包根 cwd 下通过 runpy.run_path 注入接管超时验证弹窗证据，Windows 桌面实测仍待执行。历史 ANSI owner 按 UTF-8→mbcs/GBK→latin-1 回退并记日志；无法证明归属的服务端口占用立即失败。
 
@@ -12,9 +12,9 @@ report 不再使用内置 demo key；心跳与上传均要求显式非空 key（
 
 保留历史约束：注册表异常 fail-closed；星图点击与回读绑定同一 DOM 实例，挂载证据限定同一直接容器；旧 v1 试用不自动重签。enrollment token 为既有扫描白名单，扫描不证明服务端绑定与撤销机制。
 
-本轮自检记录见 `review/FIX_REPORT_1.2.200.md`；历史记录见外部 FIX_REPORT_1.2.167_GPT.md。Windows WMI/VBS、Task Scheduler、双入口竞争及真实发布仍待实机验证。
+本轮自检记录见 `review/FIX_REPORT_1.2.203.md`；历史记录见外部 FIX_REPORT_1.2.167_GPT.md。Windows WMI/VBS、Task Scheduler、双入口竞争及真实发布仍待实机验证。
 
-## 1.2.200 相对 1.2.199 的变更
+## 1.2.203 相对 1.2.199 的变更
 - `agent/winport/activation.py`：`control_error` 优先于凭据比较；`control_unreachable` 提示「控制面连不上，稍后再点『重新获取接入配置』」，`control_admin_rejected` 提示「服务商侧授权配置异常，请联系服务商」。仅当服务端明确返回 `rotated=false`（或 `rotate_skipped=true`）且三项凭据全同才提示换新码；缺 `rotated` 字段按未知处理，返回「服务端未确认已换发新凭据」，不再误报成「未轮换/需新码」。
 - `agent/winport/activation.py`：写 `control.json` 前比较 `binding_epoch`，新值小于盘上已有值即丢弃并返回「已获取更新的接入配置，无需覆盖」；`activate_with_code()` 的 exchange 与写盘在同一把 `_LOCK` 内完成，避免两个标签页乱序覆盖。
 - `agent/winport/agentpoll.py`：`stop_event` 已置位时不再写 `error`；首次 poll 失败只记日志，连续 2 次失败才写 `error`，一次成功立即写 `connected` 覆盖旧错误；poller 正常退出写 `disabled`「接入服务已停止」，异常退出写 `error`「接入服务异常退出：原因」，状态原因会脱敏 device token。
@@ -26,7 +26,7 @@ report 不再使用内置 demo key；心跳与上传均要求显式非空 key（
 ## 1.2.199 相对 1.2.198 的变更
 - `agent/winport/panel.py`：激活、重试自动授权或「重新获取接入配置」成功后启动状态轮询：立即拉取一次，随后每 2 秒一次，最多 60 秒；`connected`/`error`（或 `level=ok/bad`）立即停止，超时显示「飞书接入：连接中…（可稍后刷新页面）」。只更新 `#control-status-line`，不整页刷新、不覆盖 `#license-result`。重复点击会取消上一轮定时器与在途结果。
 - `agent/winport/activation.py`：`_bridge_control()` 写盘前读取现有合法 control；若 `customer_token`、`device_token`、`binding_epoch` 全部不变，不覆盖 control.json，写 `error` 状态并返回 `ok=False` 与同一原因；`_install_with_control()` / `_complete_existing_control()` 不再把该情况包装成「接入已补齐」。
-- `CUSTOMER_README.txt`：1.2.199 曾删除「输入同一激活码可恢复」并改为直接索取新码；1.2.200 已纠正为同码可重兑、先点「重新获取接入配置」，仅在明确未轮换/需新码时索取新码。
+- `CUSTOMER_README.txt`：1.2.199 曾删除「输入同一激活码可恢复」并改为直接索取新码；1.2.203 已纠正为同码可重兑、先点「重新获取接入配置」，仅在明确未轮换/需新码时索取新码。
 - `tests/test_control_bridge_1199.py`：新增同码同凭据不重写 control 的回归，以及 pending→connected、pending→error、60 秒超时三种 JS DOM 轮询回归。
 
 ## 1.2.198 相对 1.2.197 的变更

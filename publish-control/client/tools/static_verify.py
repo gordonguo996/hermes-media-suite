@@ -350,11 +350,8 @@ def main() -> int:
     from winport import schedule as schedule_mod
     cadence_settings = schedule_mod.normalize_schedule_settings(
         load_settings(layout.settings_file))
-    check("cadence default windows are the four natural time bands",
-          cadence_settings["windows"] == [["07:00", "09:30"],
-                                          ["11:00", "13:30"],
-                                          ["17:00", "19:30"],
-                                          ["20:00", "22:30"]],
+    check("cadence default windows cover the whole day (1.2.205)",
+          cadence_settings["windows"] == [["00:00", "23:59"]],
           str(cadence_settings["windows"]))
     check("cadence defaults leave the per-account daily cap unlimited",
           cadence_settings["max_per_day_per_account"] == 0)

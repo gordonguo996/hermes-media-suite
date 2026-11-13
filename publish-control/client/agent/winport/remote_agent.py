@@ -173,10 +173,29 @@ def _loop(config, logger):
         time.sleep(2)
 
 
+_THREAD = None
+_THREAD_KEY = None
+_THREAD_LOCK = threading.Lock()
+
+
 def start_remote_agent(config, logger=None):
-    thread = threading.Thread(target=_loop, args=(config, logger),
-                              name="remote-agent", daemon=True)
-    thread.start()
+    """Start the operator channel once per binding.
+
+    The panel restarts the poller after a successful re-provision; without this
+    guard that path would either leave the operator channel dead (the old bug:
+    every queued materials request timed out) or start duplicate threads.
+    """
+    global _THREAD, _THREAD_KEY
+    key = (getattr(config, "control_url", ""), getattr(config, "customer_id", ""),
+           getattr(config, "device_id", ""), getattr(config, "token", ""))
+    with _THREAD_LOCK:
+        if _THREAD is not None and _THREAD.is_alive() and _THREAD_KEY == key:
+            return _THREAD
+        thread = threading.Thread(target=_loop, args=(config, logger),
+                                  name="remote-agent", daemon=True)
+        _THREAD = thread
+        _THREAD_KEY = key
+        thread.start()
     if logger is not None:
         logger.info("remote agent started customer=%s device=%s",
                     config.customer_id, getattr(config, "device_id", "") or "-")

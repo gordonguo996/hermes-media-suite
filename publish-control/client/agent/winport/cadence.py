@@ -821,7 +821,10 @@ def next_available_after(layout, after, account_id, *, settings=None, now=None):
     now = parse_time(now).astimezone(tz) if now is not None else _utcnow()
     horizon = after + timedelta(days=cfg["max_horizon_days"])
     point = max(after + timedelta(minutes=1),
-                now + timedelta(minutes=cfg["min_lead_minutes"]))
+                now + timedelta(minutes=cfg["min_lead_minutes"] + 1))
+    point = point.replace(second=0, microsecond=0)
+    if point <= now + timedelta(minutes=cfg["min_lead_minutes"]):
+        point += timedelta(minutes=1)
     while point <= horizon:
         verdict = validate_manual_time(
             point, now, settings=settings, account_id=account_id,

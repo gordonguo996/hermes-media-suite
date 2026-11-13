@@ -20,9 +20,26 @@ from .hashing import sha256_file
 
 #: path prefixes that make up the "startup chain" we can cheaply re-hash.
 DEFAULT_SCOPES = ("agent/", "scripts/", "config/", "assets/", "tools/", "tests/")
+#: 1.2.213: these two files are written by the client itself AFTER install --
+#: ``activation.json`` by the panel auto-activation (activation.py) and
+#: ``license.json`` by the offline import -- so they are legitimately absent
+#: from the shipped MANIFEST.  Treating them as "manifest-external tamper"
+#: turned every activated install RED and silently blocked publishing.
+#: The allowlist is by EXACT relative path: nothing else under config/ is
+#: exempt, so a smuggled .py/.ps1/.exe/archive there is still an EXTRA.
+RUNTIME_STATE_FILES = frozenset((
+    "config/activation.json",
+    "config/license.json",
+))
+
 #: loose files at the program root that are part of the launch chain.
 ROOT_FILES = ("bootstrap.bat", "show-machine-code.bat", "import-license.bat",
               "selftest.bat", "requirements.txt")
+
+
+def _is_runtime_state(rel: str) -> bool:
+    """True only for the two client-written state files under config/."""
+    return rel in RUNTIME_STATE_FILES
 
 
 def _in_scope(rel: str, scopes) -> bool:
@@ -91,6 +108,9 @@ def verify_program(program, *, manifest_name="MANIFEST.json",
         # never stand in for a modified/missing source file (those are still
         # hashed above), so it must not turn a healthy install into a RED gate.
         if "__pycache__/" in rel and rel.endswith(".pyc"):
+            continue
+        # 1.2.213: the two client-written state files are not launch chain.
+        if _is_runtime_state(rel):
             continue
         verdict["extra"].append(rel)
 
