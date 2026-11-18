@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+import os
 import stat
 import subprocess
 import sys
@@ -224,7 +225,7 @@ def test_runtime_poll_failure_is_visible_over_valid_control(
     text = (Path(layout.data) / "control-status.json").read_text(encoding="utf-8")
     assert "customer-secret" not in text
     assert "device-secret" not in text
-    assert stat.S_IMODE(
+    assert os.name == "nt" or stat.S_IMODE(
         (Path(layout.data) / "control-status.json").stat().st_mode) == 0o600
 
 

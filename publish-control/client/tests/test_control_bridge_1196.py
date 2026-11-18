@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import stat
 import threading
 from pathlib import Path
@@ -169,7 +170,7 @@ def test_existing_formal_licence_reprovisions_missing_control(
     status = control_status.read_status(layout)
     assert status["state"] == "pending"
     assert panel.control_banner(layout)["state"] != "connected"
-    assert stat.S_IMODE((Path(layout.data) / "control-status.json").stat().st_mode) == 0o600
+    assert os.name == "nt" or stat.S_IMODE((Path(layout.data) / "control-status.json").stat().st_mode) == 0o600
 
 
 def test_existing_licence_control_error_keeps_authorisation_and_shows_reason(

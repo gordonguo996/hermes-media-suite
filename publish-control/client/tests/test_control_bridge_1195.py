@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import stat
 import sys
 import threading
@@ -81,7 +82,7 @@ def test_activate_with_code_writes_valid_control_atomically(
     assert installed == [response["license"]]
     target = Path(layout.data) / "control.json"
     assert json.loads(target.read_text(encoding="utf-8")) == control
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert os.name == "nt" or stat.S_IMODE(target.stat().st_mode) == 0o600
     assert not list(Path(layout.data).glob(".control-*.json"))
 
 
@@ -102,7 +103,7 @@ def test_activate_online_response_writes_control(tmp_path, monkeypatch):
     assert len(installed) == 1
     target = Path(layout.data) / "control.json"
     assert json.loads(target.read_text(encoding="utf-8")) == control
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert os.name == "nt" or stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize("control", [

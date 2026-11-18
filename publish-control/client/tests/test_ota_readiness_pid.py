@@ -108,7 +108,10 @@ def _spawn_marker_chain(tmp_path: Path):
     launcher = textwrap.dedent(
         """
         import json, os, subprocess, sys
-        child = subprocess.Popen([sys.executable, "-c", %r])
+        # The supervisor-visible process IS the redirector, so the agent is
+        # started with the real interpreter: on Windows a venv python.exe would
+        # add a second redirector layer the product never has.
+        child = subprocess.Popen([getattr(sys, "_base_executable", None) or sys.executable, "-c", %r])
         print(json.dumps({"launcher_pid": os.getpid(), "agent_pid": child.pid}))
         raise SystemExit(child.wait())
         """

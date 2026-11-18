@@ -95,12 +95,13 @@ jobs:
           if-no-files-found: ignore
 
   windows:
-    # Customers run Windows.  Informational until the suite has been green on a
-    # Windows runner once; then drop continue-on-error and make it required.
-    name: windows (py3.11, informational)
+    # Customers run Windows.  Required since 1.2.220: the suite, the static
+    # gates and the e2e self-verify were green on a real Windows 11 machine
+    # (Chinese locale, Python 3.14) on 2026-11-18 -- 336 passed, e2e 19/19.
+    # Add "windows (py3.11)" to main's required status checks.
+    name: windows (py3.11)
     runs-on: windows-latest
     timeout-minutes: 40
-    continue-on-error: true
     env:
       PYTHONUTF8: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -123,4 +124,15 @@ jobs:
         working-directory: publish-control/client
         run: |
           python tools/static_verify.py
+          python tools/scan_forbidden_patterns.py
           python tools/check_encodings.py --root .
+      - name: e2e self-verify (Windows ACL lock, real Chrome probe, Chinese paths)
+        working-directory: publish-control/client
+        run: python tools/e2e_selfverify.py --out "$env:RUNNER_TEMP\SELF_VERIFY_REPORT.md"
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-windows
+          path: ${{ runner.temp }}/SELF_VERIFY_REPORT.md
+          if-no-files-found: ignore

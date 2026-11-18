@@ -1105,6 +1105,84 @@ def _purge_leftover_dirs(roots, keep, current_version, log, protected=()) -> int
                 pass
     return removed_count
 
+SUPERVISOR_TASK_NAME = "ManjuPublishAssistantSupervisor"
+
+# 1.2.220: what a stale ONLOGON task is pointed at when we may not change it.
+# The task's /TR path belongs to an OLD extracted package (program dirs differ
+# per version).  If that directory is purged, wscript pops "cannot find script
+# file" at every logon; if it survives, the OLD supervisor starts at logon and
+# can win the lock/port race, so the customer silently runs the old version
+# after a reboot.  We cannot edit the task, but the old directory is the
+# customer's own and writable, so the file the task runs is replaced by this
+# forwarder: it reads data\run\program-path.txt (written by every install) and
+# runs the CURRENT program's supervisor.  The stub directory has no bootstrap
+# entry or MANIFEST.json, so no later purge treats it as an old install, and
+# every later upgrade is followed automatically.  Pure ASCII on purpose.
+TASK_FORWARDER_MARKER = "' manju-task-forwarder v1"
+TASK_FORWARDER_VBS = (
+    TASK_FORWARDER_MARKER + "\r\n"
+    "' Written by the installer: the logon task could not be changed, so this\r\n"
+    "' file forwards it to the currently installed version.  Safe to keep.\r\n"
+    "Option Explicit\r\n"
+    "Dim shell, fso, dataDir, pathFile, stream, program, target, q\r\n"
+    'Set shell = CreateObject("WScript.Shell")\r\n'
+    'Set fso = CreateObject("Scripting.FileSystemObject")\r\n'
+    'dataDir = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & '
+    '"\\HuolongAgent\\publish-worker"\r\n'
+    'pathFile = dataDir & "\\run\\program-path.txt"\r\n'
+    "If Not fso.FileExists(pathFile) Then WScript.Quit 3\r\n"
+    'Set stream = CreateObject("ADODB.Stream")\r\n'
+    "stream.Type = 2\r\n"
+    'stream.Charset = "utf-8"\r\n'
+    "stream.Open\r\n"
+    "stream.LoadFromFile pathFile\r\n"
+    "program = stream.ReadText(-1)\r\n"
+    "stream.Close\r\n"
+    'program = Trim(Replace(Replace(program, vbCr, ""), vbLf, ""))\r\n'
+    "If Len(program) > 0 Then\r\n"
+    "  If AscW(Left(program, 1)) = &HFEFF Then program = Mid(program, 2)\r\n"
+    "End If\r\n"
+    "If Len(program) = 0 Then WScript.Quit 3\r\n"
+    'target = program & "\\scripts\\run-agent-task.vbs"\r\n'
+    "If Not fso.FileExists(target) Then WScript.Quit 4\r\n"
+    "If LCase(fso.GetAbsolutePathName(target)) = "
+    "LCase(fso.GetAbsolutePathName(WScript.ScriptFullName)) Then WScript.Quit 0\r\n"
+    "q = Chr(34)\r\n"
+    'WScript.Quit shell.Run("wscript.exe //B //nologo " & q & target & q, 0, True)\r\n'
+)
+
+
+def _decode_schtasks_xml(raw: bytes) -> str:
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        return raw.decode("utf-16")
+    if len(raw) > 1 and raw[1:2] == b"\x00":
+        return raw.decode("utf-16-le")
+    for enc in ("utf-8-sig", process_encoding()):
+        try:
+            return raw.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", "replace")
+
+
+def _task_target_from_xml(xml: str):
+    """The .vbs a scheduled task runs, from ``schtasks /Query /XML`` output.
+
+    XML is used because ``/V /FO LIST`` labels are localised.  Only the
+    ``wscript.exe <args> "<path>.vbs"`` shape we create is recognised."""
+    import html as _html
+    m = re.search(r"<Arguments>(.*?)</Arguments>", xml, re.S)
+    args = _html.unescape(m.group(1)) if m else ""
+    c = re.search(r"<Command>(.*?)</Command>", xml, re.S)
+    command = _html.unescape(c.group(1)).strip().strip('"') if c else ""
+    text = args if args else command
+    q = re.findall(r'"([^"]+\.vbs)"', text, re.I)
+    if q:
+        return q[-1]
+    bare = re.findall(r"(\S+\.vbs)\b", text, re.I)
+    return bare[-1] if bare else None
+
+
 class Installer:
     def __init__(self, program: Path) -> None:
         self.program = program
@@ -2153,7 +2231,8 @@ class Installer:
                     self.log("WARNING: reused existing ONLOGON task (no permission to recreate)")
                 else:
                     self.log("WARNING: existing ONLOGON task could not be reused; "
-                             "starting supervisor directly and leaving the task as-is")
+                             "starting supervisor directly")
+                    self._install_task_forwarder(launcher)
             else:
                 self.log("WARNING: logon task unavailable (no admin); starting supervisor directly")
             if not self._launch_supervisor_direct(launcher):
@@ -2192,7 +2271,7 @@ class Installer:
         command = 'wscript.exe //nologo "%s"' % launcher
         try:
             res = subprocess.run(
-                ["schtasks", "/Change", "/TN", "ManjuPublishAssistantSupervisor",
+                ["schtasks", "/Change", "/TN", SUPERVISOR_TASK_NAME,
                  "/TR", command],
                 capture_output=True, timeout=30, **text_mode_options())
             self.log("supervisor task repoint rc=%s" % res.returncode)
@@ -2204,6 +2283,52 @@ class Installer:
         except (OSError, subprocess.SubprocessError) as exc:
             self.log("supervisor task repoint failed: %s" % exc)
             return False
+
+    def _supervisor_task_target(self):
+        """Path of the .vbs the existing ONLOGON task runs, or None."""
+        if os.name != "nt":
+            return None
+        try:
+            res = subprocess.run(["schtasks", "/Query", "/TN", SUPERVISOR_TASK_NAME, "/XML"],
+                                 capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.log("supervisor task query failed: %s" % exc)
+            return None
+        if res.returncode != 0:
+            return None
+        return _task_target_from_xml(_decode_schtasks_xml(res.stdout))
+
+    def _install_task_forwarder(self, launcher: Path, target=None) -> bool:
+        """Make a task we may not change start the CURRENT version (see
+        TASK_FORWARDER_VBS).  Never raises: the agent is already running and
+        HKCU Run covers logon; this only removes the stale-task hazards."""
+        target = target if target is not None else self._supervisor_task_target()
+        if not target:
+            self.log("WARNING: stale logon task target unknown; it may start an "
+                     "old version or show a script error at logon")
+            return False
+        old = Path(target)
+        same = os.path.normcase(os.path.abspath(str(old))) == \
+            os.path.normcase(os.path.abspath(str(launcher)))
+        if same:
+            self.log("logon task already runs this install's supervisor")
+            return True
+        payload = TASK_FORWARDER_VBS.encode("ascii")
+        try:
+            if old.is_file():
+                head = old.read_bytes()[:len(TASK_FORWARDER_MARKER)]
+                if head == TASK_FORWARDER_MARKER.encode("ascii") and \
+                        old.read_bytes() == payload:
+                    self.log("logon task forwarder already in place: %s" % old)
+                    return True
+            old.parent.mkdir(parents=True, exist_ok=True)
+            _write_verified_bytes(old, payload, "logon task forwarder")
+        except (OSError, RuntimeError) as exc:
+            self.log("WARNING: cannot write logon task forwarder %s: %s "
+                     "(task may start an old version at logon)" % (old, exc))
+            return False
+        self.log("logon task forwarder written: %s -> current program" % old)
+        return True
 
     def _launch_supervisor_direct(self, launcher: Path) -> bool:
         """Start the supervisor without Task Scheduler.

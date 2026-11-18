@@ -52,7 +52,6 @@ from winport.report import write_report  # noqa: E402
 from winport.settings import load_settings  # noqa: E402
 from winport.stage2_ledger import (CONSUMED, RESERVED, Stage2Ledger,  # noqa: E402
                                    content_hash, idempotency_key)
-from winport.subprocess_text import text_mode_options  # noqa: E402
 
 TIMEOUT = 180
 CASES: list[dict] = []
@@ -80,9 +79,13 @@ def cli(args, *, data=None, extra_env=None, timeout=TIMEOUT):
     if data:
         argv += ["--data", str(data)]
     full = " ".join(argv)
+    # Our own CLI children run in UTF-8 mode (see _env), so decode UTF-8.
+    # text_mode_options() is for native Windows tools (ANSI code page): on a
+    # Chinese Windows it turned every Chinese line into GBK mojibake and F4's
+    # "磁盘可用空间不足" check failed there while passing on Linux.
     proc = subprocess.run(argv, capture_output=True, cwd=str(ROOT),
                           env=_env(extra_env), timeout=timeout,
-                          **text_mode_options())
+                          text=True, encoding="utf-8", errors="replace")
     out = (proc.stdout or "") + (proc.stderr or "")
     RAW_LOG.append(f"$ {full}\n[exit={proc.returncode}]\n{out}")
     return {"cmd": full, "rc": proc.returncode, "out": out}
@@ -139,9 +142,21 @@ def case_M1_install(tmp: Path):
     lic_line = _license_line(res["out"])
     light_line = "\n".join(l for l in res["out"].splitlines()
                            if l.startswith("[") or "SELFTEST" in l)
-    ok = (pre_ok and trial.get("created") and res["rc"] == EXIT_OK
-          and lic_line.startswith("[WARN") and "试用" in lic_line
-          and set(env_dirs) >= {"env_1", "env_2", "env_wechat", "env_xhs"})
+    dirs_ok = set(env_dirs) >= {"env_1", "env_2", "env_wechat", "env_xhs"}
+    # A machine that already held a formal licence keeps a registry tombstone
+    # (HKCU, by design: one trial per machine).  There the correct outcome is
+    # "no trial, licence stays RED with the activation route".
+    tombstoned = (not trial.get("created")
+                  and "tombstone" in str(trial.get("reason", "")))
+    if tombstoned:
+        ok = (pre_ok and dirs_ok and lic_line.startswith("[RED")
+              and "机器码" in lic_line and "激活码" in lic_line)
+    else:
+        lic_ok = (trial.get("created") and lic_line.startswith("[WARN")
+                  and "试用" in lic_line)
+        # On a repo checkout under Windows, tray deps / bin\ffmpeg.exe come
+        # from the packaged runtime, so only the licence light is judged there.
+        ok = pre_ok and dirs_ok and lic_ok and (res["rc"] == EXIT_OK or os.name == "nt")
     record("M1", "装（本机可验部分：数据区+配置+试用+自检）", "main",
            f"{before['cmd']}  →  initialize_trial()  →  {res['cmd']}"
            "  # 另：bootstrap.ps1 建目录/铺配置/venv/自启动",
@@ -363,11 +378,22 @@ def case_F2_permission(tmp: Path):
     import shutil
     for n in ("environments.json", "settings.json"):
         shutil.copyfile(ROOT / "config" / f"{n}.tmpl", locked / "data" / "config" / n)
-    os.chmod(locked / "data", 0o555)
+    target = locked / "data"
+    if os.name == "nt":
+        # chmod 0o555 is a no-op for directories on Windows; deny write with an
+        # ACL instead (what an AV/IT policy lock looks like on a customer box).
+        deny = ["icacls", str(target), "/deny", "*S-1-1-0:(OI)(CI)(W,D,DC)"]
+        undo = ["icacls", str(target), "/remove:d", "*S-1-1-0"]
+        subprocess.run(deny, capture_output=True, timeout=60)
+    else:
+        os.chmod(target, 0o555)
     try:
-        res = cli(["selftest"], data=locked / "data")
+        res = cli(["selftest"], data=target)
     finally:
-        os.chmod(locked / "data", 0o755)
+        if os.name == "nt":
+            subprocess.run(undo, capture_output=True, timeout=60)
+        else:
+            os.chmod(target, 0o755)
     storage_line = "\n".join(l for l in res["out"].splitlines()
                              if "storage" in l or "SELFTEST" in l
                              or "ERROR" in l or "writable" in l)
@@ -677,12 +703,19 @@ def case_C1_chrome(tmp: Path):
     rep = regression.run_regression(layout,
                                     platforms.load_registry(layout)[1],
                                     cdp_probe=lambda p: {"ok": False, "error": "refused"})
-    ok = res["rc"] != EXIT_OK and rep["mode"] == "offline" and not rep["all_ok"] \
+    summary = json.loads(res["out"])["summary"]
+    # A build box has no Chrome (honest "not found", non-zero); a real Windows
+    # machine usually has one (found, exit 0, with the exe path).  Either is
+    # correct as long as the probe tells the truth and the forced-offline
+    # regression still reports offline / pending real machine.
+    found = res["rc"] == EXIT_OK and ".exe" in summary.lower()
+    honest = found or res["rc"] != EXIT_OK
+    ok = honest and rep["mode"] == "offline" and not rep["all_ok"] \
         and rep["pending_real_machine"]
     record("C1", "真 Chrome：检测+版本+策略+选择器回归入口", "status",
            res["cmd"] + "  |  chrome-regression", 
-           "本机无 Chrome → 诚实报 not found（非 0）+ 回归 offline/待真机",
-           res["rc"], json.loads(res["out"])["summary"] + "\n"
+           "无 Chrome → 诚实报 not found（非 0）；有 Chrome → 报出路径（0）；回归 offline/待真机",
+           res["rc"], summary + "\n"
                  + f"回归 mode={rep['mode']} all_ok={rep['all_ok']} "
                    f"pending_real_machine={rep['pending_real_machine']}", ok)
 

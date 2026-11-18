@@ -166,6 +166,10 @@ def test_launch_environment_replaces_a_frozen_instance(tmp_path, monkeypatch):
     monkeypatch.setattr(chrome, "spawn", lambda args, **kw: types.SimpleNamespace(pid=999))
     monkeypatch.setattr(chrome, "wait_for_cdp", lambda port, **kw: {"ok": True, "browser": "Chrome/156"})
     monkeypatch.setattr(chrome, "resolve_browser_pid", lambda *a, **kw: (999, True))
+    # Windows really checks the new pid with the process table; the fake pid
+    # 999 must be reported alive there too, so the Windows branch is exercised.
+    monkeypatch.setattr(chrome, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(chrome, "cdp_version", lambda port, **kw: {"ok": True})
 
     probes = [{"ok": False, "error": "TimeoutError"}, {"ok": True, "browser": "Chrome/156"}]
     result = chrome.launch_environment(env, layout, url="https://creator.douyin.com/",
