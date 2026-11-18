@@ -1143,6 +1143,12 @@ def clear_client_ledger_blocks(customer_id=None):
     if custom:
         env = {"WINPORT_DATA": root,
                "WINPORT_SYSTEM": os.path.join(root, "system")}
+    if _use_named_ops():
+        info = _client_named_op("ledger-unblock", timeout=60)
+        if not info.get("ok"):
+            return {"ok": False, "removed": {}, "path": "",
+                    "error": info.get("err") or "ledger clear failed"}
+        return info
     try:
         result = _client_exec_code(_ledger_auto_clear_source(root),
                                    timeout=60, cwd=CLI_ROOT, env=env)
@@ -1449,6 +1455,70 @@ def _client_exec_code(code, timeout=60, cwd=None, env=None):
         return _client_failure_result(exc)
 
 
+#: 1.2.221: the client runs the bot's everyday work as named product
+#: operations; arbitrary exec there needs the customer's remote assist.
+NAMED_OPS_CAP = "named-ops-1"
+REMOTE_ASSIST_HINT = ("\u5ba2\u6237\u673a\u672a\u5f00\u542f\u8fdc\u7a0b\u534f\u52a9\uff1a"
+                      "\u8bf7\u5ba2\u6237\u5728\u53d1\u5e03\u52a9\u624b\u9762\u677f\u91cc\u70b9"
+                      "\u300c\u5f00\u542f\u8fdc\u7a0b\u534f\u52a9 4 \u5c0f\u65f6\u300d\u540e\u518d\u8bd5\u3002")
+
+
+def _client_has_named_ops():
+    """True once /info (refreshed by ensure_runtime) advertised named ops."""
+    with _RUNTIME_LOCK:
+        return NAMED_OPS_CAP in (_RUNTIME_STATE.get("capabilities") or [])
+
+
+def _use_named_ops():
+    return _runtime_ready() and _client_has_named_ops()
+
+
+def _http_error_detail(exc):
+    """Text of a relay error; a 403 for remote assist gets a customer hint."""
+    body = getattr(exc, "read", None)
+    if callable(body):
+        try:
+            data = json.loads(body().decode("utf-8", "replace") or "{}")
+            if data.get("remote_assist_required"):
+                return REMOTE_ASSIST_HINT
+            if data.get("error"):
+                return str(data["error"])
+        except Exception:
+            pass
+    return _last_line(exc) or type(exc).__name__
+
+
+def _client_named_op(name, args=None, timeout=60):
+    """Run one named operation on the client; always returns a dict."""
+    try:
+        res = _runtime_http("named", {"name": name, "args": args or {}},
+                            timeout=timeout + 30)
+    except Exception as exc:
+        msg = _http_error_detail(exc)
+        return {"ok": False, "err": msg, "error": msg, "transport_error": True}
+    if not isinstance(res, dict):
+        return {"ok": False, "err": "\u8fd4\u56de\u683c\u5f0f\u9519\u8bef"}
+    if not res.get("ok") and not res.get("err") and res.get("error"):
+        res["err"] = res["error"]
+    return res
+
+
+def _plan_make_args(files, topics_text="", title="", xingtu_task=None,
+                    batch_id=None, item_topics=None):
+    args = {"files": [item["path"] for item in _file_entries(files)],
+            "topics": topics_text, "env_id": str(PUBLISH_ENV or "env_1"),
+            "default_title": DEFAULT_PUBLISH_TITLE}
+    if title:
+        args["title"] = title
+    if xingtu_task:
+        args["xingtu_task"] = xingtu_task
+    if batch_id:
+        args["batch_id"] = str(batch_id)
+    if item_topics is not None:
+        args["item_topics"] = [list(v or []) for v in item_topics]
+    return args
+
+
 INBOX_SCAN = r"""
 import os,glob,json
 base=os.environ.get("BT_WORKER_BASE") or ((os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local"))+r"\HuolongAgent\publish-worker")
@@ -1522,6 +1592,11 @@ print(json.dumps({"ok":True,"files":files,"gap_min":gap_min,
 
 def scan_inbox():
     """List every publishable video in the customer's inbox, oldest first."""
+    if _use_named_ops():
+        info = _client_named_op("inbox-scan", timeout=30)
+        if not info.get("ok"):
+            return {"ok": False, "err": info.get("err") or "\u8bfb\u53d6 inbox \u5931\u8d25"}
+        return info
     result = _client_exec_code(INBOX_SCAN, timeout=30, cwd=CLI_ROOT)
     out = (result.get("stdout") or "").strip()
     if not _exec_ok(result) or not out:
@@ -1816,6 +1891,12 @@ def _wait_until_schedule(schedule_at):
 
 
 def _update_plan_time(plan_path, schedule_at):
+    if _use_named_ops():
+        info = _client_named_op("plan-set-time", {"plan": str(plan_path),
+                                                  "schedule_at": str(schedule_at)}, timeout=30)
+        if not info.get("ok") and not info.get("err"):
+            info["err"] = "\u66f4\u65b0\u8ba1\u5212\u65f6\u95f4\u5931\u8d25"
+        return info
     code = (
         "import json,os\n"
         "p=%s\n"
@@ -1986,6 +2067,14 @@ def run_on_client(py_code, timeout=45):
         return f"[\u5ba2\u6237\u673a\u4e0d\u53ef\u8fbe] {e}"
 
 def status_text():
+    if _use_named_ops():
+        info = _client_named_op("agent-health", timeout=15)
+        if not info.get("ok"):
+            return ("\u5ba2\u6237\u673a\u72b6\u6001\u67e5\u8be2\u6ca1\u6709\u5b8c\u6210\uff1a"
+                    + friendly_error(info.get("err"), "\u8bf7\u786e\u8ba4\u5ba2\u6237\u673a\u5f00\u673a\u3001\u8054\u7f51\u4e14\u53d1\u5e03\u52a9\u624b\u6b63\u5728\u8fd0\u884c\u3002"))
+        health = info.get("health")
+        text = health if isinstance(health, str) else json.dumps(health, ensure_ascii=False)
+        return "\u5ba2\u6237\u673a\u72b6\u6001\uff1a\n" + (text.strip()[:600] or "\u65e0\u8fd4\u56de")
     out = run_on_client('import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:8795/health",timeout=5).read().decode())')
     if "[stderr]" in out or "\u5ba2\u6237\u673a\u4e0d\u53ef\u8fbe" in out:
         return ("\u5ba2\u6237\u673a\u72b6\u6001\u67e5\u8be2\u6ca1\u6709\u5b8c\u6210\uff1a"
@@ -2127,6 +2216,9 @@ def ensure_runtime(force=False):
             with _RUNTIME_LOCK:
                 globals()["CLI_PY"] = python
                 _RUNTIME_STATE["python"] = python
+        with _RUNTIME_LOCK:
+            _RUNTIME_STATE["capabilities"] = [
+                str(c) for c in (info.get("capabilities") or []) if isinstance(c, str)]
         return True
     except Exception:
         return False
@@ -2476,6 +2568,26 @@ def _fetch_client_files(run, pattern, timeout=100):
     return files
 
 
+def _fetch_exports(kind, prefix, legacy_pattern, timeout=100):
+    """Today's export files as [(name, bytes)].
+
+    1.2.221+: list with the ``export-files`` named op and read each file with
+    the relay's data-area read; older clients: the legacy listing script."""
+    if not _use_named_ops():
+        return _fetch_client_files(run_on_client, legacy_pattern, timeout=timeout)
+    import base64
+    info = _client_named_op("export-files", {"kind": kind, "prefix": prefix},
+                            timeout=timeout)
+    files = []
+    for row in (info.get("files") or []) if info.get("ok") else []:
+        try:
+            got = _runtime_http("read", {"path": row["path"]}, timeout=timeout)
+            files.append((row["name"], base64.b64decode(got.get("base64") or "")))
+        except Exception:
+            continue
+    return sorted(files)
+
+
 def collect_and_report(chat_id, customer_id=None):
     try:
         ensure_browser("env_2", 9225)
@@ -2498,7 +2610,8 @@ def collect_and_report(chat_id, customer_id=None):
         day = _t.strftime("%Y%m%d")
         # \u6309\u5f53\u5929\u5b9e\u9645\u5bfc\u51fa\u7684\u6587\u4ef6\u679a\u4e3e\u8d26\u53f7\uff0c\u4e0d\u5199\u6b7b\u5ba2\u6237\u7684\u6296\u97f3\u6635\u79f0\uff1a\u6362\u5ba2\u6237\u3001\u52a0\u53f7\u90fd\u4e0d\u7528\u6539\u4ee3\u7801\u3002
         paths, labels, missing = [], [], []
-        dy_files = _fetch_client_files(run_on_client, base + "\\douyin\\\u4f5c\u54c1\u5217\u8868\u5bfc\u51fa_%s*.json" % day)
+        dy_files = _fetch_exports("douyin", "\u4f5c\u54c1\u5217\u8868\u5bfc\u51fa_%s" % day,
+                                  base + "\\douyin\\\u4f5c\u54c1\u5217\u8868\u5bfc\u51fa_%s*.json" % day)
         for idx, (_name, blob) in enumerate(dy_files):
             local = "/tmp/dy%d.json" % (idx + 1)
             open(local, "wb").write(blob)
@@ -2507,7 +2620,9 @@ def collect_and_report(chat_id, customer_id=None):
         # 1.2.188 \u8d77\u661f\u56fe\u6309\u8d26\u53f7\u5404\u4e00\u4efd\uff08\u661f\u56fe\u6570\u636e_<\u65e5\u671f>_<env>.json\uff09\uff0c\u5168\u90e8\u5e26\u4e0a\uff1b
         # \u53ea\u53d6\u4e00\u4efd\u4f1a\u8ba9\u5176\u4ed6\u53f7\u7684\u661f\u56fe\u6709\u6548\u64ad\u653e\u6052\u4e3a 0\u3002
         star_paths = []
-        for idx, (_name, blob) in enumerate(_fetch_client_files(run_on_client, base + "\\xingtu\\\u661f\u56fe\u6570\u636e_%s*.json" % day)):
+        for idx, (_name, blob) in enumerate(_fetch_exports(
+                "xingtu", "\u661f\u56fe\u6570\u636e_%s" % day,
+                base + "\\xingtu\\\u661f\u56fe\u6570\u636e_%s*.json" % day)):
             local = "/tmp/xt%d.json" % (idx + 1)
             open(local, "wb").write(blob)
             star_paths.append(local)
@@ -2704,20 +2819,28 @@ def do_publish(chat_id, text, topics=None, files=None, xingtu_task=None):
         env["BT_TITLE"] = title
     # \u5ba2\u6237\u673a /exec \u4e0d\u8bfb\u53d6 payload["env"]\uff0c\u73af\u5883\u53d8\u91cf\u5fc5\u987b\u4f5c\u4e3a\u524d\u7f6e\u884c\u6ce8\u5165\u4ee3\u7801\uff1b
     # \u4e2d\u6587\u5b57\u9762\u91cf\u7edf\u4e00\u8f6c\u4e49\u6210 \uXXXX\uff0c\u907f\u514d Windows ANSI \u4f20\u53c2\u4e71\u7801\u3002
-    pre = _publish_plan_prelude(topics, files, title, xingtu_task=xingtu_task)
-    code = pre + PLAN_MAKER
-    d = _client_exec_code(code, timeout=90, cwd=CLI_ROOT, env=env)
-    if d.get("transport_error"):
-        sys.stderr.write("[plan] fail %s\n" % _last_line(d.get("stderr")))
-        reply(chat_id, _error_message(
-            "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", d.get("stderr"),
-            "\u5ba2\u6237\u673a\u6682\u65f6\u4e0d\u53ef\u8fbe\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002")); return
-    out = (d.get("stdout") or "").strip()
-    try:
-        info = json.loads(out.splitlines()[-1])
-    except Exception:
-        reply(chat_id, _error_message(
-            "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", _result_error(d, "\u8fd4\u56de\u4e0d\u662f\u6709\u6548 JSON"), "")); return
+    if _use_named_ops():
+        info = _client_named_op("plan-make", _plan_make_args(
+            files, " ".join(topics or []), title, xingtu_task), timeout=90)
+        if info.get("transport_error"):
+            reply(chat_id, _error_message(
+                "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", info.get("err"),
+                "\u5ba2\u6237\u673a\u6682\u65f6\u4e0d\u53ef\u8fbe\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002")); return
+    else:
+        pre = _publish_plan_prelude(topics, files, title, xingtu_task=xingtu_task)
+        code = pre + PLAN_MAKER
+        d = _client_exec_code(code, timeout=90, cwd=CLI_ROOT, env=env)
+        if d.get("transport_error"):
+            sys.stderr.write("[plan] fail %s\n" % _last_line(d.get("stderr")))
+            reply(chat_id, _error_message(
+                "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", d.get("stderr"),
+                "\u5ba2\u6237\u673a\u6682\u65f6\u4e0d\u53ef\u8fbe\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002")); return
+        out = (d.get("stdout") or "").strip()
+        try:
+            info = json.loads(out.splitlines()[-1])
+        except Exception:
+            reply(chat_id, _error_message(
+                "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", _result_error(d, "\u8fd4\u56de\u4e0d\u662f\u6709\u6548 JSON"), "")); return
     if not info.get("ok"):
         reply(chat_id, _error_message(
             "\u751f\u6210\u53d1\u5e03\u8ba1\u5212\u5931\u8d25\uff1a", info.get("err"),
@@ -2767,6 +2890,13 @@ def make_batch_plans(chat_id, files, item_topics, batch_id,
     paths = [item["path"] for item in entries]
     if not paths:
         return {"ok": False, "err": "\u6ca1\u6709\u7d20\u6750"}
+    if _use_named_ops():
+        info = _client_named_op("plan-make", _plan_make_args(
+            files, "", "", xingtu_task, batch_id=batch_id,
+            item_topics=item_topics), timeout=180)
+        if not info.get("ok") and not info.get("err"):
+            info["err"] = "\u751f\u6210\u6279\u91cf\u8ba1\u5212\u5931\u8d25"
+        return info
     pre = 'import os;os.environ["BT_BATCH_ID"]=%s\n' % json.dumps(
         str(batch_id), ensure_ascii=True)
     pre += _env_json_line("BT_FILES", paths)
@@ -4458,28 +4588,30 @@ except Exception as exc:
 """
 
 
-def _mt_reschedule_item(chat_id, item, schedule_at, require_window=False,
-                        device_id=None):
-    """Rewrite one plan and issue a preview/token for that exact final plan.
+def _mt_reschedule_named(cid, item, plan_path, preview_path, schedule_at, device_id):
+    """1.2.221+ clients: the reschedule is product code (``named`` op).
 
-    The old preview is deleted on the client before dry-run.  A plan without
-    matching preview/token is never left usable by the dispatcher.
-    """
-    customer = lookup_customer(chat_id) or {}
-    cid = str(customer.get("customer_id") or "")
-    if not cid:
-        raise MTBindingError("会话未绑定客户")
-    plan_path = str(item.get("plan_path") or "")
-    preview_path = str(item.get("preview_path") or "")
-    if not plan_path:
-        raise MTBindingError("计划路径缺失")
-    if not preview_path:
-        raise MTBindingError("预览文件路径缺失")
-    if not str(schedule_at or "").strip():
-        raise MTBindingError("计划时间缺失")
-    device_id = device_id or item.get("device_id")
+    Returns the operation's result dict, or None when the client predates
+    named operations (then the caller falls back to the legacy script)."""
+    args = {"plan": plan_path, "preview": preview_path,
+            "schedule_at": str(schedule_at), "topics": item.get("desired_topics")}
+    try:
+        res = remote_op(cid, "named", {"name": "plan-reschedule", "args": args},
+                        timeout=460, device_id=device_id)
+    except RemoteOpError as exc:
+        detail = str(exc)
+        if "unsupported op" in detail or "unknown named" in detail:
+            return None
+        res = exc.result if isinstance(exc.result, dict) else {}
+        if not res:
+            raise MTBindingError("客户机重排失败：%s" % detail) from exc
+    if isinstance(res.get("result"), dict) and "ok" in res["result"]:
+        res = res["result"]
+    return res
 
-    _mt_clear_credentials(item)
+
+def _mt_reschedule_legacy(cid, item, plan_path, preview_path, schedule_at, device_id):
+    """Clients before 1.2.221: ship _MT_RESCHED (needs remote assist on 1.2.221+)."""
     code = _MT_RESCHED % {
         "plan": json.dumps(plan_path, ensure_ascii=True),
         "sched": json.dumps(str(schedule_at), ensure_ascii=True),
@@ -4519,6 +4651,37 @@ def _mt_reschedule_item(chat_id, item, schedule_at, require_window=False,
         raise MTBindingError(
             "重排脚本没有返回可解析结果：%s"
             % _remote_result_detail(res, "客户机重排失败"))
+    return sentinel
+
+
+
+def _mt_reschedule_item(chat_id, item, schedule_at, require_window=False,
+                        device_id=None):
+    """Rewrite one plan and issue a preview/token for that exact final plan.
+
+    The old preview is deleted on the client before dry-run.  A plan without
+    matching preview/token is never left usable by the dispatcher.
+    """
+    customer = lookup_customer(chat_id) or {}
+    cid = str(customer.get("customer_id") or "")
+    if not cid:
+        raise MTBindingError("会话未绑定客户")
+    plan_path = str(item.get("plan_path") or "")
+    preview_path = str(item.get("preview_path") or "")
+    if not plan_path:
+        raise MTBindingError("计划路径缺失")
+    if not preview_path:
+        raise MTBindingError("预览文件路径缺失")
+    if not str(schedule_at or "").strip():
+        raise MTBindingError("计划时间缺失")
+    device_id = device_id or item.get("device_id")
+
+    _mt_clear_credentials(item)
+    sentinel = _mt_reschedule_named(cid, item, plan_path, preview_path,
+                                    schedule_at, device_id)
+    if sentinel is None:            # client older than 1.2.221
+        sentinel = _mt_reschedule_legacy(cid, item, plan_path, preview_path,
+                                         schedule_at, device_id)
     if not sentinel.get("ok"):
         raise MTBindingError(
             "重建计划/预览失败：%s"

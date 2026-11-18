@@ -79,6 +79,26 @@ def cmd_fingerprint(args):
     return EXIT_OK
 
 
+def cmd_named_op(args):
+    """1.2.221: a bot operation that used to be shipped as ``python -c``."""
+    from .named_ops import run
+    return run(args.named_op, _layout(args), args.args_json)
+
+
+def cmd_remote_assist(args):
+    """Customer-side switch for remote assist (never callable remotely)."""
+    from .remote_policy import DEFAULT_ASSIST_HOURS, assist_state, set_assist
+    layout = _layout(args)
+    if args.action == "on":
+        state = set_assist(layout, True, hours=args.hours or DEFAULT_ASSIST_HOURS, actor="cli")
+    elif args.action == "off":
+        state = set_assist(layout, False, actor="cli")
+    else:
+        state = assist_state(layout)
+    print(json.dumps(state, ensure_ascii=False))
+    return EXIT_OK
+
+
 def cmd_machine_code(args):
     """Self-service step 1: print + save the \u673a\u5668\u7801 the customer sends us."""
     from .onboard import machine_code_info, machine_code_text, write_machine_code
@@ -1474,6 +1494,17 @@ def build_parser() -> argparse.ArgumentParser:
     hc.set_defaults(func=cmd_publish_hold_clear)
     with_paths(sub.add_parser("env-probe")).set_defaults(func=cmd_env_probe)
     sub.add_parser("fingerprint").set_defaults(func=cmd_fingerprint)
+
+    from .named_ops import OPERATIONS as _NAMED_OPS
+    for _name in _NAMED_OPS:
+        _np = with_paths(sub.add_parser(_name))
+        _np.add_argument("--args-json", default="{}",
+                         help="ASCII JSON object with the operation's arguments")
+        _np.set_defaults(func=cmd_named_op, named_op=_name)
+    ra = with_paths(sub.add_parser("remote-assist"))
+    ra.add_argument("action", choices=("on", "off", "status"))
+    ra.add_argument("--hours", type=float, default=None)
+    ra.set_defaults(func=cmd_remote_assist)
 
     mc = with_paths(sub.add_parser("machine-code"))
     mc.add_argument("--out", default=None,

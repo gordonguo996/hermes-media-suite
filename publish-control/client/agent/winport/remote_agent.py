@@ -4,7 +4,10 @@ The customer machine polls the control plane for operator requests and posts
 results back. No inbound port, no SSH keys, no extra configuration on the
 customer side: the same CUSTOMER_TOKEN used by agentpoll authenticates it.
 
-Supported operations: ping, exec, read, write, ls.
+Supported operations: ping, exec, read, write, ls, materials.  Since 1.2.221
+exec / read / write / ls go through remote_policy: product CLI subcommands and
+reads inside the data/program folders always; anything else only while the
+customer has remote assist switched on.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import threading
 import time
 import urllib.request
 
+from . import remote_policy
 from .subprocess_text import hidden_window_options
 
 MAX_RESULT_BYTES = 200000
@@ -49,7 +53,7 @@ def _identity(config):
     return {"device_id": config.device_id, "binding_epoch": int(epoch)}
 
 
-def _op_exec(body):
+def _op_exec(body, layout=None):
     cmd = body.get("cmd")
     if isinstance(cmd, str) and cmd.strip():
         args = cmd
@@ -63,6 +67,13 @@ def _op_exec(body):
     if not isinstance(timeout, (int, float)) or not 1 <= timeout <= 600:
         timeout = 60
     cwd = body.get("cwd") or None
+    # 1.2.221: product CLI subcommands run from the program directory;
+    # anything else (string command, shell, other argv) needs assist.
+    forced = remote_policy.authorize_exec(
+        layout if layout is not None else _policy_layout(None),
+        args if not shell else None, channel="control", shell=shell)
+    if forced:
+        cwd = forced
     # Remote operator commands must never show a console window on the
     # customer's desktop; this channel is separate from remote_channel.execute.
     proc = subprocess.run(args, shell=shell, cwd=cwd, timeout=timeout,
@@ -130,15 +141,32 @@ def execute(op, body=None, config=None):
         return {"ok": True, "host": socket.gethostname(),
                 "user": os.environ.get("USERNAME") or os.environ.get("USER") or "",
                 "cwd": os.getcwd()}
+    layout = _policy_layout(config)
+    if op == "named":
+        from . import named_ops
+        name = (body or {}).get("name")
+        remote_policy.audit(layout, "control", "named", name in named_ops.OPERATIONS,
+                            {"name": str(name)[:40]})
+        return named_ops.dispatch(name, layout, (body or {}).get("args") or {})
     if op == "exec":
-        return _op_exec(body)
-    if op == "read":
-        return _op_read(body)
-    if op == "write":
-        return _op_write(body)
-    if op == "ls":
-        return _op_ls(body)
+        return _op_exec(body, layout)
+    if op in ("read", "write", "ls"):
+        path = os.path.expandvars(os.path.expanduser(
+            str((body or {}).get("path") or ("." if op == "ls" else ""))))
+        remote_policy.authorize_path(layout, os.path.abspath(path) if path else "",
+                                     op=op, channel="control")
+        return {"read": _op_read, "write": _op_write, "ls": _op_ls}[op](body)
     raise ValueError("unsupported op: " + str(op))
+
+
+def _policy_layout(config):
+    """The machine's layout for policy checks.  Fails closed: without a
+    config the default layout (and therefore the default policy) applies."""
+    layout = getattr(config, "layout", None) if config is not None else None
+    if layout is None:
+        from .paths import Layout
+        layout = Layout()
+    return layout
 
 
 def _loop(config, logger):

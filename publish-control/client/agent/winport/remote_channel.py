@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .paths import install_root
 from .process_identity import marker_identity
 from .process_tree import ProcessTree
+from . import remote_policy
 from .settings import load_settings
 from .subprocess_text import hidden_window_options
 from .version import VERSION
@@ -321,7 +322,7 @@ def terminate(proc):
     proc.wait(timeout=10)
 
 
-def execute(body, cancel=None, lifecycle=None, processes=None):
+def execute(body, cancel=None, lifecycle=None, processes=None, cwd=None):
     encoding = body.get('encoding', 'utf-8')
     if not isinstance(encoding, str):
         raise ValueError('encoding must be a codec name')
@@ -355,7 +356,8 @@ def execute(body, cancel=None, lifecycle=None, processes=None):
             if cancel is not None and cancel.is_set():
                 return {'stdout': '', 'stderr': '', 'exit_code': None,
                         'timed_out': False, 'cancelled': True, 'truncated': False}
-            tree = ProcessTree(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err, shell=False)
+            tree = ProcessTree(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err, shell=False,
+                               **({'cwd': cwd} if cwd else {}))
             if processes is not None:
                 processes.add(tree)
         proc = tree.proc
@@ -443,11 +445,28 @@ class ControlService:
             return {'hostname': socket.gethostname(), 'username': getpass.getuser(),
                     'version': VERSION, 'pid': os.getpid(),
                     'program': str(install_root()),
-                    'python': sys.executable}
+                    'python': sys.executable,
+                    # 1.2.221: the bot switches to named CLI operations when
+                    # it sees this; arbitrary exec then needs remote assist.
+                    'capabilities': ['named-ops-1'],
+                    'remote_assist': remote_policy.assist_state(self.layout)}
+        if operation == 'named':
+            # 1.2.221: the bot's everyday work as product code (no -c scripts).
+            from . import named_ops
+            name = body.get('name')
+            remote_policy.audit(self.layout, 'relay', 'named', name in named_ops.OPERATIONS,
+                                {'name': str(name)[:40]})
+            return named_ops.dispatch(name, self.layout, body.get('args') or {})
         if operation == 'exec':
-            return execute(body, self.cancel, self.lifecycle, self.processes)
+            # The policy decides before anything starts: product CLI
+            # subcommands always; anything else only under remote assist.
+            cwd = remote_policy.authorize_exec(
+                self.layout, body.get('argv'), channel='relay',
+                shell=body.get('shell') is not None)
+            return execute(body, self.cancel, self.lifecycle, self.processes, cwd=cwd)
         if operation in ('read', 'write'):
             path = allowed_path(body.get('path'), self.roots)
+            remote_policy.authorize_path(self.layout, path, op=operation, channel='relay')
             if operation == 'read':
                 with path.open('rb') as stream:
                     data = stream.read(LIMIT + 1)
@@ -476,6 +495,7 @@ class ControlService:
                 Path(staging).unlink(missing_ok=True)
             return {'bytes': len(data)}
         if operation == 'shot':
+            remote_policy.authorize_path(self.layout, None, op='shot', channel='relay')
             if os.name != 'nt':
                 raise ValueError('screenshot requires a Windows interactive desktop')
             # Capture in-process: launching powershell.exe trips 360's
@@ -575,8 +595,11 @@ class ControlService:
                     if not isinstance(body, dict):
                         raise ValueError('JSON object required')
                     result = owner.dispatch(op, body)
-                    owner.logger.info('operation %s completed', op if op in ('exec', 'read', 'write', 'shot', 'info', 'healthz') else 'unknown')
+                    owner.logger.info('operation %s completed', op if op in ('exec', 'read', 'write', 'shot', 'info', 'healthz', 'named') else 'unknown')
                     self.reply(200, result)
+                except remote_policy.RemoteAssistRequired as exc:
+                    owner.logger.warning('remote assist required for %s', op)
+                    self.reply(403, {'error': str(exc), 'remote_assist_required': True})
                 except PermissionError:
                     owner.logger.warning('file access denied')
                     self.reply(403, {'error': 'file access denied'})
