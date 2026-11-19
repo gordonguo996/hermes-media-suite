@@ -98,19 +98,23 @@ def _harden_windows_acl(target):
     if domain and "\\" not in user and "@" not in user:
         account = domain + "\\" + user
     grants = ["%s:(F)" % account, "SYSTEM:(F)"]
-    hidden = {}
+    from .subprocess_text import text_mode_options
+    # icacls prints in the ANSI code page (GBK on Chinese Windows) while the
+    # product runs with PYTHONUTF8=1; a bare text=True made the pipe reader
+    # thread raise UnicodeDecodeError on every activation there.
+    hidden = dict(text_mode_options())
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         hidden["creationflags"] = subprocess.CREATE_NO_WINDOW
     try:
         reset = subprocess.run(
             ["icacls", str(target), "/reset"],
-            capture_output=True, text=True, timeout=30, **hidden)
+            capture_output=True, timeout=30, **hidden)
         if reset.returncode != 0:
             logging.warning("control.json ACL reset skipped (%s): %s",
                             reset.returncode, (reset.stderr or "").strip()[:300])
         proc = subprocess.run(
             ["icacls", str(target), "/inheritance:r", "/grant:r"] + grants,
-            capture_output=True, text=True, timeout=30, **hidden)
+            capture_output=True, timeout=30, **hidden)
         if proc.returncode != 0:
             logging.warning("control.json ACL hardening failed (%s): %s",
                             proc.returncode, (proc.stderr or "").strip()[:300])
