@@ -3,6 +3,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -55,9 +56,17 @@ def main():
     parser.add_argument('--payload', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--materials', type=Path, help='stage from existing offline bundle')
+    parser.add_argument('--fetch', action='store_true',
+                        help='download+verify materials from materials.lock.json first (tools/fetch_materials.py)')
     parser.add_argument('--activation-config', type=Path, help='operator-provisioned customer credential')
     args = parser.parse_args()
     try:
+        if args.fetch:
+            if args.materials:
+                raise ValueError('--fetch and --materials are mutually exclusive')
+            args.materials = args.payload.with_name(args.payload.name + '-materials')
+            subprocess.run([sys.executable, str(Path(__file__).resolve().parent / 'fetch_materials.py'),
+                            '--out', str(args.materials)], check=True)
         if args.materials:
             stage(args.materials, args.payload)
         if args.activation_config:
@@ -67,12 +76,15 @@ def main():
             encoding='utf-8-sig').strip()
         build_bundle.build(args.payload, version=version)
         validate(args.payload)
-        compiler = shutil.which('makensis')
+        compiler = shutil.which('makensis') or next(
+            (c for c in (r'C:\Program Files (x86)\NSIS\makensis.exe',
+                         r'C:\Program Files\NSIS\makensis.exe') if Path(c).exists()), None)
         if not compiler:
             raise ValueError('NSIS compiler missing on build host')
         args.output.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run([compiler, '-DPAYLOAD=' + str(args.payload.resolve()),
                         '-DOUTPUT=' + str(args.output.resolve()),
+                        '-DVERSION=' + version,
                         str(Path(__file__).resolve().parents[1] / 'installer/setup.nsi')], check=True)
     except Exception as exc:
         parser.exit(1, 'BLOCKED: ' + str(exc) + '\n')

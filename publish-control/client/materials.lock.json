@@ -1,0 +1,111 @@
+﻿{
+  "schema": "materials-lock/1",
+  "note": "每一项离线材料的官方来源与哈希。tools/fetch_materials.py 按此下载、校验并整理成 build_setup.py --materials 需要的目录。基线是已发布的 1.2.218 包（逐项哈希核对过）。",
+  "baseline_release": "v1.2.218",
+  "python": {
+    "version": "3.11.9",
+    "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+    "sha256": "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+    "md5": "e8dcd502e34932eebcaf1be056d5cbcd",
+    "install_args": [
+      "/quiet",
+      "InstallAllUsers=0",
+      "Include_launcher=0",
+      "Include_test=0",
+      "Include_doc=0",
+      "Include_tcltk=0",
+      "Include_pip=1",
+      "Include_dev=1",
+      "AssociateFiles=0",
+      "Shortcuts=0",
+      "PrependPath=0",
+      "CompileAll=0"
+    ],
+    "rename_to_rt": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll"
+    ],
+    "baseline_tree": {
+      "files": 1779,
+      "size": 46038031,
+      "tree_sha256": "4e583f33ead9ab36c6b5f1dd4ebff2b8cc24809fa643203b46af148e58453ccd"
+    },
+    "key_files": {
+      "python.exe": "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec",
+      "pythonw.exe": "d5355e1de2a5195dccb1ba524b146aa7705be71af18d876819756838251b37b3",
+      "python311.dll": "0817a2a657a24c0d5fbb60df56960f42fc66b3039d522ec952dab83e2d869364",
+      "python3.dll": "db84bc052cfb121fe4db36242ba5f1d2c031b600ef5d8d752cf25b7c02b6bac6",
+      "vcruntime140.dll.__rt": "4d292623516f65c80482081e62d5dadb759dc16e851de5db24c3cbb57b87db83",
+      "vcruntime140_1.dll.__rt": "a113f192195f245f17389e6ecbed8005990bcb2476ddad33f7c4c6c86327afe5"
+    },
+    "unverified": "key_files 与 baseline_tree 取自 1.2.218 包；尚未在干净 Windows 上用官方安装包重装并逐文件比对，由 CI 的 materials 任务首次运行时给出差异清单。"
+  },
+  "ffmpeg": {
+    "version": "9.0.2-essentials_build",
+    "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip",
+    "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "members": {
+      "ffmpeg-9.0.2-essentials_build/bin/ffmpeg.exe": {
+        "to": "bin/ffmpeg.exe",
+        "sha256": "3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec",
+        "size": 105423872
+      },
+      "ffmpeg-9.0.2-essentials_build/LICENSE": {
+        "to": "bin/LICENSE",
+        "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+        "size": 35147
+      },
+      "ffmpeg-9.0.2-essentials_build/README.txt": {
+        "to": "bin/README.txt",
+        "sha256": "0342de6bb39dd421cbec2c00d89ad274b640d75ad3f2cab09ffd647ce2d8f949",
+        "size": 41577
+      }
+    }
+  },
+  "playwright_ffmpeg": {
+    "revision": "1010",
+    "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1010/ffmpeg-win64.zip",
+    "sha256": "b295ff06a2095ab1cbbb34acac8f0ccded27ff390fc02c0859382ff1b74d7a0a",
+    "extract_to": "browsers/ffmpeg-1010",
+    "baseline_tree": {
+      "files": 2,
+      "size": 3517342,
+      "tree_sha256": "e4913c632a788ff0982719480990b36d13a07578f93b25b53c4771bf98cd37ed"
+    }
+  },
+  "webkit": {
+    "revision": "2070",
+    "optional": true,
+    "include_in_package": true,
+    "note": "134 MB，占整包约 45%。是否还有客户在用待对方确认；确认没有后把 include_in_package 改为 false 即可从包里去掉。",
+    "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/webkit/2070/webkit-win64.zip",
+    "sha256": "f2ca61340c136eff4e56cd3ebbd3c18056b49843002ca827b5ea3f69b72b664d",
+    "extract_to": "browsers/webkit-2070",
+    "baseline_tree": {
+      "files": 1266,
+      "size": 137100977,
+      "tree_sha256": "4ec247b13e9074adc40cc5e9078849df067a5090f8f2b329291200dbe5dab3ce"
+    },
+    "rename_to_rt": [
+      "vcruntime140.dll",
+      "vcruntime140_1.dll",
+      "msvcp140.dll",
+      "msvcp140_2.dll"
+    ]
+  },
+  "chrome_offline": {
+    "url": "https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe",
+    "policy": "latest-signed",
+    "note": "该地址永远指向最新版 Chrome，哈希会变。因此不固定哈希：要求文件带 Google LLC 的 Authenticode 签名且签名覆盖整个文件，并把本次实际哈希写进包里的 .sha256 和 verify 文件。",
+    "baseline_sha256": "d7e898f080258c41996846a423b77bfdab0c14ea1e38afddfdf496c286fc7983",
+    "baseline_size": 167031224,
+    "signer": "Google LLC",
+    "extract_to": "chrome-offline/ChromeStandaloneSetup64.exe"
+  },
+  "wheels": {
+    "lock_file": "wheels.lock.json",
+    "python_version": "3.11",
+    "platform": "win_amd64",
+    "extract_to": "wheels"
+  }
+}
