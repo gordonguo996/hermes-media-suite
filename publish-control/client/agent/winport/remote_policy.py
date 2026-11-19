@@ -201,7 +201,23 @@ def cli_subcommand(argv, layout):
         return None
     if not _path_flags_ok(argv[4:], layout):
         return None
+    if sub == "publish-hold-clear" and not _bot_actor_only(argv[4:]):
+        return None
     return sub
+
+
+def _bot_actor_only(rest) -> bool:
+    """1.2.222: a remote hold clear is always the bot's, so the client's
+    graded policy (agent-origin, allowed reason, 24 h limit) applies.  Without
+    ``--actor bot`` the CLI defaults to ``human`` and would clear any brake --
+    risk control included -- so that form needs the customer (remote assist)."""
+    actors = []
+    for i, arg in enumerate(rest):
+        if arg == "--actor":
+            actors.append(rest[i + 1] if i + 1 < len(rest) else "")
+        elif arg.startswith("--actor="):
+            actors.append(arg.split("=", 1)[1])
+    return actors == ["bot"]
 
 
 def _path_flags_ok(rest, layout) -> bool:

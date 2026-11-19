@@ -52,6 +52,10 @@ FAULT_KINDS = (CAPTCHA, RISK_CONTROL, LOGIN_LOST, NETWORK_ERROR, SMS_VERIFICATIO
 HOLD_SOURCES = ("agent", "bot", "human")
 AUTO_CLEAR_REASON_CODES = frozenset({LEASE_TIMEOUT, PUBLISH_UNKNOWN,
                                      CHANNEL_UNBOUND})
+#: Bot clears per channel within 24 h, enforced on the client from its own
+#: audit log (the bot keeps the same limit server-side; this one cannot be
+#: bypassed by a different or misconfigured bot).
+AUTO_CLEAR_MAX_24H = 3
 
 ASCII_MID_RE = re.compile(r"[0-9]{19}\Z")
 
@@ -635,6 +639,27 @@ class PublishHoldStore:
             record["audit_error"] = repr(exc)
         return record
 
+    def _bot_clears_24h(self, channel_id, now=None) -> int:
+        """Successful bot clears of this channel in the last 24 h (audit log)."""
+        now = time.time() if now is None else now
+        path = self.path.with_name("publish_hold_audit.jsonl")
+        count = 0
+        try:
+            with open(path, encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (row.get("channel_id") == str(channel_id)
+                            and row.get("actor") == "bot"
+                            and row.get("result") == "cleared"
+                            and now - float(row.get("at") or 0) < 86400):
+                        count += 1
+        except OSError:
+            return 0
+        return count
+
     def clear_manual(self, channel_id: str, *, reason: str,
                      actor: str = "human", reason_code: str | None = None) -> dict:
         if not reason or not reason.strip():
@@ -671,6 +696,16 @@ class PublishHoldStore:
                                         detail="reason_not_allowed", reason=reason)
                     return {"cleared": False, "refused": True,
                             "code": "reason_not_allowed",
+                            "source": hold.get("source"),
+                            "reason_code": hold.get("reason_code"),
+                            "channel": str(channel_id), "audit": audit}
+                recent = self._bot_clears_24h(channel_id)
+                if recent >= AUTO_CLEAR_MAX_24H:
+                    audit = self._audit(channel_id, actor=actor, hold=hold,
+                                        result="refused", count=recent,
+                                        detail="limit_24h", reason=reason)
+                    return {"cleared": False, "refused": True,
+                            "code": "limit_24h", "count_24h": recent,
                             "source": hold.get("source"),
                             "reason_code": hold.get("reason_code"),
                             "channel": str(channel_id), "audit": audit}
