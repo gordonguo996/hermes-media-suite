@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .idempotency import material_fingerprint
-from .jsonio import write_json
+from .jsonio import read_json, write_json
 from .secure_io import (assert_no_reparse_chain, copy_hashed_file,
                         is_within, sha256_file, secure_stat, secure_open)
 from .subprocess_text import hidden_window_options
@@ -678,6 +678,23 @@ def confirm(config, payload=None, command_id=None, runner=None):
     token = str(payload.get("confirm_token") or "")
     if not token:
         return {"ok": False, "stage": "confirm", "error": "confirm_token_missing"}
+    plan_data = read_json(plan_path, default=None)
+    if isinstance(plan_data, dict):
+        requested_device = str(plan_data.get("device_id") or "").strip()
+        own_device = str(getattr(config, "device_id", "") or "").strip()
+        if requested_device and requested_device != own_device:
+            return {"ok": False, "stage": "confirm",
+                    "error": "plan_device_mismatch"}
+        requested_epoch = plan_data.get("device_binding_epoch",
+                                        plan_data.get("binding_epoch"))
+        if requested_epoch is not None:
+            try:
+                if int(requested_epoch) != int(getattr(config, "binding_epoch", 0)):
+                    return {"ok": False, "stage": "confirm",
+                            "error": "plan_epoch_mismatch"}
+            except (TypeError, ValueError):
+                return {"ok": False, "stage": "confirm",
+                        "error": "plan_epoch_invalid"}
     command_part = re.sub(r"[^A-Za-z0-9._-]", "_",
                           str(command_id or ""))[:80]
     if not command_part or command_part in (".", ".."):

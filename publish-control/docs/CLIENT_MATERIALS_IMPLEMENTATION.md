@@ -1,6 +1,6 @@
 # 客户机只读 materials：隔离实现交付
 
-代码和测试已完成，未部署。交付包括 `client_patch/` 三个完整源码、`client_materials.patch`、默认 dry-run 的 `scripts/deploy_client_materials.py`、`fix_evidence_client/` 测试与独立审查记录。人工终审及维护授权尚未进行。
+代码和测试已完成，未部署。1.2.222 起，交付源码统一位于 `client/agent/winport/`（agentpoll.py / remote_agent.py / remote_ops.py）；旧的 `client_patch/` 副本已删除。默认 dry-run 的 `scripts/deploy_client_materials.py`、`fix_evidence_client/` 测试与独立审查记录保留。人工终审及维护授权尚未进行。
 
 ## 实现
 
@@ -49,7 +49,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 fix_evidence_client/reproduce.py
 
 ## 部署脚本与部署前检查
 
-脚本面向未来在客户 Windows 本机维护窗口运行；无需把整个证据运行时复制到产品目录。将交付包保留在产品目录之外，并保留 scripts/client_patch/fix_evidence_client/baseline 的相对结构。默认或 `--dry-run` 只检查本地交付源码并输出计划，不联网、不备份、不写目标、不重启。实际执行必须显式 `--apply` 并提供维护批准标记、精确 program/data 路径、现有 PID 和新的外部 backup 路径。
+脚本面向未来在客户 Windows 本机维护窗口运行；无需把整个证据运行时复制到产品目录。脚本现在直接读取 `client/agent/winport/`，并保留 `fix_evidence_client/baseline/` 作为漂移对照。默认或 `--dry-run` 只检查本地交付源码并输出计划，不联网、不备份、不写目标、不重启。实际执行必须显式 `--apply` 并提供维护批准标记、精确 program/data 路径、现有 PID 和新的外部 backup 路径。
+
+**1.2.222 起该脚本不再承担日常升级。** 当前源码相对 1.2.155 基线已漂移，`--apply` 会以 `source baseline drift` 拒绝；客户机更新请使用签名的完整安装包，或 `client/tools/ota_patch.py check/gate` 产出的 OTA 补丁。不要再从任何 `client_patch` 旧目录推文件。
 
 实际 apply 会核验当前源码及整个 MANIFEST 与快照一致、VERSION 条目哈希及顶层版本一致、PID 的真实解释器路径和精确 `-m winport --data` 参数、维护前完整性；之后备份三源码/VERSION/MANIFEST，停止精确 PID，原子替换各文件，按内容重算 bytes/SHA256、递增补丁版本，再直接 `runtime/pythonw -B -m winport --data` 静默启动。验证新进程存活、9223 监听 PID、新版本 healthz、运行时 integrity.json 及独立 verify_program，结果写入外部备份目录。部署并非多文件事务；中途失败会停止并保留备份，禁止继续发布，需人工回滚。
 

@@ -17,20 +17,31 @@ import urllib.request
 
 BUNDLE = Path(__file__).resolve().parents[1]
 NAMES = ('remote_ops.py', 'agentpoll.py', 'remote_agent.py')
+SOURCE_REL = Path('client') / 'agent' / 'winport'
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 def proposal(bundle=BUNDLE):
     baseline = bundle / 'fix_evidence_client' / 'baseline'
+    if not baseline.is_dir():
+        baseline = bundle / 'bundle_1028a' / 'fix_evidence_client' / 'baseline'
+    source = bundle / SOURCE_REL
     result = {}
     for name in NAMES:
-        data = (bundle / 'client_patch' / name).read_bytes()
-        data.decode('ascii')
+        data = (source / name).read_bytes()
+        data.decode('utf-8')
         compile(data, name, 'exec')
+        baseline_file = baseline / name
+        expected = (digest(baseline_file.read_bytes())
+                    if baseline_file.is_file() else '')
+        actual = digest(data)
         result['agent/winport/' + name] = {
-            'bytes': len(data), 'sha256': digest(data),
-            'expected_sha256': digest((baseline / name).read_bytes())}
+            'bytes': len(data), 'sha256': actual,
+            'expected_sha256': expected,
+            'source': str(SOURCE_REL / name),
+            'baseline': str(baseline),
+            'baseline_match': bool(expected) and actual == expected}
     return result
 
 def hidden():
@@ -92,6 +103,12 @@ def apply(ns, changes):
         raise RuntimeError('separate human maintenance approval required')
     if not all((ns.program,ns.data,ns.backup,ns.pid)):
         raise RuntimeError('apply requires --program --data --backup --pid')
+    drift = [rel for rel, change in changes.items()
+             if not change.get('baseline_match')]
+    if drift:
+        raise RuntimeError(
+            'source baseline drift: ' + ', '.join(drift) +
+            '; use the signed full installer or client/tools/ota_patch.py instead')
     program=Path(ns.program).resolve(); data=Path(ns.data).resolve()
     backup=Path(ns.backup).resolve()
     if backup==program or program in backup.parents or backup.exists():
@@ -115,7 +132,7 @@ def apply(ns, changes):
     if manifest.get('version', version) != version:
         raise RuntimeError('MANIFEST version and VERSION disagree; rebase required')
     new_version=version.rsplit('.',1)[0]+'.'+str(int(version.rsplit('.',1)[1])+1)
-    payloads={rel:(BUNDLE/'client_patch'/Path(rel).name).read_bytes() for rel in changes}
+    payloads={rel:(BUNDLE/SOURCE_REL/Path(rel).name).read_bytes() for rel in changes}
     payloads['VERSION']=(new_version+'\n').encode('ascii')
     for rel,change in changes.items():
         if digest((program/rel).read_bytes())!=change['expected_sha256']:

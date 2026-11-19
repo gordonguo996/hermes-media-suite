@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import getpass
 import logging
 import os
 import re
+import subprocess
 import tempfile
 import threading
 from pathlib import Path
@@ -82,6 +84,43 @@ def is_valid_control(control):
     return True
 
 
+def _harden_windows_acl(target):
+    """Best-effort icacls hardening: current user + SYSTEM only.
+
+    Windows ignores POSIX 0600.  Failure is logged and never blocks activation;
+    the data directory's inherited ACL is still a useful baseline.
+    """
+    if os.name != "nt":
+        return True
+    user = (os.environ.get("USERNAME") or "").strip() or getpass.getuser()
+    domain = (os.environ.get("USERDOMAIN") or "").strip()
+    account = user
+    if domain and "\\" not in user and "@" not in user:
+        account = domain + "\\" + user
+    grants = ["%s:(F)" % account, "SYSTEM:(F)"]
+    hidden = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        hidden["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        reset = subprocess.run(
+            ["icacls", str(target), "/reset"],
+            capture_output=True, text=True, timeout=30, **hidden)
+        if reset.returncode != 0:
+            logging.warning("control.json ACL reset skipped (%s): %s",
+                            reset.returncode, (reset.stderr or "").strip()[:300])
+        proc = subprocess.run(
+            ["icacls", str(target), "/inheritance:r", "/grant:r"] + grants,
+            capture_output=True, text=True, timeout=30, **hidden)
+        if proc.returncode != 0:
+            logging.warning("control.json ACL hardening failed (%s): %s",
+                            proc.returncode, (proc.stderr or "").strip()[:300])
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001 - defence in depth must not block
+        logging.warning("control.json ACL hardening skipped: %s", exc)
+        return False
+
+
 def _write_control_config(layout, control):
     """Atomically persist the server-issued control binding with mode 0600."""
     target = Path(layout.data) / 'control.json'
@@ -96,6 +135,7 @@ def _write_control_config(layout, control):
         os.chmod(name, 0o600)
         os.replace(name, target)
         os.chmod(target, 0o600)
+        _harden_windows_acl(target)
     finally:
         Path(name).unlink(missing_ok=True)
 

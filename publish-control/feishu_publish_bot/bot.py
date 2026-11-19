@@ -163,6 +163,11 @@ BATCH_LOCK = threading.RLock()
 AUTO_UNBLOCK_LOG = (os.environ.get("BOT_AUTO_UNBLOCK_LOG")
                     or os.path.join(BASE, "run", "auto_unblock.log"))
 AUTO_UNBLOCK_LOCK = threading.RLock()
+AUTO_CLEAR_REASON_CODES = frozenset({"lease_timeout", "publish_unknown",
+                                     "channel_unbound"})
+AUTO_CLEAR_LIMIT = 3
+AUTO_CLEAR_WINDOW_SECONDS = 24 * 60 * 60
+MANUAL_HOLD_NOTICE = "发布被冻结，需人工确认后解除"
 TOPIC_ASK = (
     "\u8fd9\u6279\u7d20\u6750\u7528\u4ec0\u4e48\u8bdd\u9898\uff1f\u76f4\u63a5\u56de\u6807\u7b7e\uff0c\u6bd4\u5982 #\u8bdd\u9898\uff08\u591a\u4e2a\u7528\u7a7a\u683c\u9694\u5f00\uff09\uff1b"
     "\u56de\u300c\u9ed8\u8ba4\u300d\u7528\u4e0a\u6b21\u7684\uff1b\u56de\u300c\u4e0d\u586b\u300d\u5c31\u4e0d\u5e26\u8bdd\u9898"
@@ -1170,20 +1175,15 @@ def clear_client_ledger_blocks(customer_id=None):
     return info
 
 
-def _append_auto_unblock_log(channel, trigger, removed, hold, ledger):
+def _append_auto_unblock_log(channel, trigger, **fields):
+    """Append one audit row for every auto-clear attempt or refusal."""
     record = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "at_epoch": time.time(),
         "channel": str(channel or ""),
         "trigger": str(trigger or ""),
-        "removed": dict(removed or {}),
-        "removed_count": len(removed or {}),
-        "hold_ok": bool((hold or {}).get("ok")),
-        "hold_cleared": bool((hold or {}).get("cleared")),
-        "ledger_ok": bool((ledger or {}).get("ok")),
-        "ledger_error": str((ledger or {}).get("error") or ""),
-        "hold_error": str((hold or {}).get("error") or ""),
     }
+    record.update(fields)
     try:
         parent = os.path.dirname(os.path.abspath(AUTO_UNBLOCK_LOG))
         if parent and not os.path.isdir(parent):
@@ -1197,45 +1197,221 @@ def _append_auto_unblock_log(channel, trigger, removed, hold, ledger):
     return record
 
 
-def auto_unblock_publish(channel, trigger, customer_id=None):
-    """Best-effort hold + ledger recovery before one retry."""
-    channel = str(channel or "").strip()
-    hold = {"ok": False, "cleared": False, "error": ""}
-    if channel:
-        try:
-            result = run_cli(
-                ["publish-hold-clear", "--channel", channel,
-                 "--reason", "bot auto unblock: clear stale publish state"],
-                timeout=120, customer_id=customer_id)
-            text = (result.get("stdout") or "").strip()
-            hold["ok"] = _exec_ok(result)
-            if not hold["ok"]:
-                hold["error"] = _result_error(result, "hold clear failed")
-            else:
+def _auto_unblock_records():
+    try:
+        with open(AUTO_UNBLOCK_LOG, "r", encoding="utf-8") as fh:
+            rows = []
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
                 try:
-                    info = json.loads(text.splitlines()[-1]) if text else {}
-                    hold["cleared"] = bool((info or {}).get("cleared"))
-                except Exception:
-                    hold["cleared"] = False
-        except Exception as exc:
-            hold["error"] = _last_line(exc) or type(exc).__name__
-    else:
-        hold["error"] = "missing channel"
-    ledger = clear_client_ledger_blocks(customer_id)
-    _append_auto_unblock_log(channel, trigger,
-                             ledger.get("removed") or {}, hold, ledger)
-    return {"channel": channel, "hold": hold, "ledger": ledger,
-            "removed": ledger.get("removed") or {}}
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict):
+                    rows.append(value)
+            return rows
+    except OSError:
+        return []
+
+
+def _auto_unblock_count_24h(channel, now=None):
+    """Successful bot auto-clears for this account in the trailing 24 hours."""
+    channel = str(channel or "")
+    now = time.time() if now is None else float(now)
+    cutoff = now - AUTO_CLEAR_WINDOW_SECONDS
+    count = 0
+    for row in _auto_unblock_records():
+        if str(row.get("channel") or "") != channel:
+            continue
+        try:
+            stamp = float(row.get("at_epoch") or 0)
+        except (TypeError, ValueError):
+            continue
+        if stamp < cutoff:
+            continue
+        result = row.get("result")
+        if result == "cleared" or (result is None and row.get("hold_cleared")):
+            count += 1
+    return count
+
+
+def _client_hold_status(channel, customer_id=None):
+    """Read the hold's source/reason_code before deciding whether to clear."""
+    try:
+        result = run_cli(["publish-hold-status", "--channel", channel],
+                         timeout=60, customer_id=customer_id)
+    except Exception as exc:
+        return {"ok": False, "error": _last_line(exc) or type(exc).__name__}
+    text = (result.get("stdout") or "").strip()
+    if not _exec_ok(result):
+        return {"ok": False, "error": _result_error(result, "hold status failed")}
+    try:
+        info = json.loads(text.splitlines()[-1]) if text else {}
+    except Exception:
+        return {"ok": False, "error": "hold status returned invalid JSON"}
+    if not isinstance(info, dict):
+        return {"ok": False, "error": "hold status returned invalid shape"}
+    return {"ok": True, "hold": info.get("hold")}
+
+
+def _arg_value(args, name):
+    try:
+        index = list(args).index(name)
+        return str(args[index + 1])
+    except (ValueError, IndexError):
+        return ""
+
+
+def _auto_unblock_dry_run(plan_path, customer_id=None):
+    """Validate without replacing the preview/token the operator confirmed."""
+    if not plan_path:
+        return {"ok": False, "err": "缺少发布计划文件，无法跑发布前校验"}
+    try:
+        result = run_cli(["dry-run", "--plan", str(plan_path), "--no-write"],
+                         timeout=900, customer_id=customer_id)
+    except Exception as exc:
+        return {"ok": False, "err": _last_line(exc) or type(exc).__name__}
+    try:
+        preview = _parse_json_blob(result.get("stdout"))
+    except Exception:
+        return {"ok": False, "err": _result_error(
+            result, "发布前校验结果不是有效 JSON")}
+    if not isinstance(preview, dict) or not preview.get("ok"):
+        return {"ok": False, "err": _dry_run_error(preview or {}),
+                "problems": (preview or {}).get("problems") or []}
+    if not preview.get("confirm_token"):
+        return {"ok": False, "err": "发布前校验没有返回 confirm_token"}
+    return {"ok": True, "confirm_token": preview.get("confirm_token")}
+
+
+def auto_unblock_publish(channel, trigger, customer_id=None, plan_path=None):
+    """Clear only an allowed agent hold, then require a fresh dry-run.
+
+    Returns ``allowed=False`` when the bot must not publish.  Every decision
+    is written to the auto-unblock audit log with source/reason/count/result.
+    """
+    channel = str(channel or "").strip()
+    base = {"channel": channel, "attempted": False, "allowed": False,
+            "source": "", "reason_code": "", "count_24h": 0,
+            "result": "not_attempted", "message": ""}
+    if not channel:
+        base.update(result="missing_channel", message=MANUAL_HOLD_NOTICE)
+        return base
+    status = _client_hold_status(channel, customer_id=customer_id)
+    if not status.get("ok"):
+        # A client that cannot report source/reason must never be auto-cleared.
+        # Publishing may still proceed; the client's own freeze gate decides.
+        base.update(result="status_unavailable",
+                    message="", detail=status.get("error") or "hold status unavailable")
+        return base
+    hold = status.get("hold")
+    if not isinstance(hold, dict):
+        base.update(result="no_hold", allowed=True)
+        return base
+    source = str(hold.get("source") or "human")
+    reason_code = str(hold.get("reason_code") or "")
+    count = _auto_unblock_count_24h(channel)
+    base.update(attempted=True, source=source, reason_code=reason_code,
+                count_24h=count, kind=str(hold.get("kind") or ""))
+    if source != "agent" or reason_code not in AUTO_CLEAR_REASON_CODES:
+        result = "refused_source" if source != "agent" else "refused_reason"
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result=result, allowed=False,
+            message=MANUAL_HOLD_NOTICE, kind=str(hold.get("kind") or ""))
+        base.update(result=result, message=MANUAL_HOLD_NOTICE, audit=record)
+        return base
+    if count >= AUTO_CLEAR_LIMIT:
+        message = ("%s（同一账号 24 小时内已自动解冻 %d 次，达到上限，已停止自动解冻）"
+                   % (MANUAL_HOLD_NOTICE, count))
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result="limit", allowed=False, message=message,
+            kind=str(hold.get("kind") or ""))
+        base.update(result="limit", message=message, audit=record)
+        return base
+    try:
+        clear_result = run_cli(
+            ["publish-hold-clear", "--channel", channel,
+             "--reason", "bot auto unblock: agent %s" % reason_code,
+             "--actor", "bot", "--reason-code", reason_code],
+            timeout=120, customer_id=customer_id)
+    except Exception as exc:
+        message = "%s（自动解冻调用失败：%s）" % (
+            MANUAL_HOLD_NOTICE, _last_line(exc) or type(exc).__name__)
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result="clear_failed", allowed=False,
+            message=message, kind=str(hold.get("kind") or ""))
+        base.update(result="clear_failed", message=message, audit=record)
+        return base
+    text = (clear_result.get("stdout") or "").strip()
+    try:
+        info = json.loads(text.splitlines()[-1]) if text else {}
+    except Exception:
+        info = {}
+    if not _exec_ok(clear_result):
+        message = "%s（自动解冻失败：%s）" % (
+            MANUAL_HOLD_NOTICE,
+            _result_error(clear_result, "hold clear failed"))
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result="clear_failed", allowed=False,
+            message=message, kind=str(hold.get("kind") or ""),
+            error=message)
+        base.update(result="clear_failed", message=message, audit=record)
+        return base
+    if not isinstance(info, dict) or not info.get("cleared"):
+        code = (info or {}).get("code") or "not_cleared"
+        message = "%s（自动解冻被拒绝：%s）" % (MANUAL_HOLD_NOTICE, code)
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result="refused_client", allowed=False,
+            message=message, kind=str(hold.get("kind") or ""), code=code)
+        base.update(result="refused_client", message=message, audit=record)
+        return base
+    dry_run = _auto_unblock_dry_run(plan_path, customer_id=customer_id)
+    if not dry_run.get("ok"):
+        message = ("冻结已解除，但发布前校验未通过，本次不发布：%s"
+                   % (dry_run.get("err") or "dry-run failed"))
+        record = _append_auto_unblock_log(
+            channel, trigger, source=source, reason_code=reason_code,
+            count_24h=count, result="dry_run_failed", allowed=False,
+            message=message, kind=str(hold.get("kind") or ""),
+            dry_run=dry_run)
+        base.update(result="dry_run_failed", message=message, audit=record,
+                    dry_run=dry_run)
+        return base
+    record = _append_auto_unblock_log(
+        channel, trigger, source=source, reason_code=reason_code,
+        count_24h=count, result="cleared", allowed=True, message="",
+        kind=str(hold.get("kind") or ""), dry_run=dry_run)
+    base.update(result="cleared", allowed=True, audit=record, dry_run=dry_run)
+    return base
 
 
 def run_publish_with_recovery(args, channel, customer_id=None, timeout=900):
-    """Run exactly one publish call.
+    """Guard, then run exactly one publish call.
 
     A failed publish may have reached Douyin before the response was lost.
     Automatically clearing the ledger and retrying can therefore publish the
     same material twice.  Recovery is now a deliberate, customer-confirmed
-    action; this helper never retries.
+    action; this helper never retries.  It does, however, refuse to publish
+    when a hold is not eligible for automatic release, or when the required
+    post-release dry-run fails.
     """
+    recovery = auto_unblock_publish(
+        channel, "pre_publish", customer_id=customer_id,
+        plan_path=_arg_value(args, "--plan"))
+    if not recovery.get("allowed", False):
+        message = recovery.get("message") or ""
+        if not message:
+            return run_cli(args, timeout=timeout, customer_id=customer_id), recovery
+        result = {"stdout": "", "stderr": message, "exit_code": 1,
+                  "hold_blocked": True}
+        return result, recovery
     result = run_cli(args, timeout=timeout, customer_id=customer_id)
     if _published_result(result):
         mark_publish_receipt()
@@ -1243,11 +1419,14 @@ def run_publish_with_recovery(args, channel, customer_id=None, timeout=900):
     if trigger:
         print("[publish] stale block (%s); no automatic retry" % trigger,
               flush=True)
-    return result, None
+    recovery["publish_trigger"] = trigger or ""
+    return result, recovery
 
 
 def publish_failure_detail(result, recovery=None, fallback="publish failed"):
     """Plain-Chinese failure text, including a failed post-recovery retry."""
+    if isinstance(recovery, dict) and recovery.get("message"):
+        return str(recovery.get("message"))
     if recovery and publish_unblock_reason(_result_text(result)):
         return ("\u4e0a\u6b21\u53d1\u5e03\u7684\u6b8b\u7559\u8bb0\u5f55\u81ea\u52a8\u6e05\u7406\u540e\uff0c"
                 "\u8fd9\u6b21\u4ecd\u88ab\u62e6\u4f4f\u3002\u8bf7\u91cd\u542f\u53d1\u5e03\u52a9\u624b\u540e\u518d\u8bd5\uff1b"

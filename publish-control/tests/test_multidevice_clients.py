@@ -569,13 +569,22 @@ class AgentProtocolTests(unittest.TestCase):
         secure.is_within = lambda *args, **kwargs: True
         subprocess_text = types.ModuleType("agent.winport.subprocess_text")
         subprocess_text.hidden_window_options = lambda argv: {}
-        for module in (customer_paths, secure, subprocess_text):
+        version = types.ModuleType("agent.winport.version")
+        version.VERSION = "1.2.222"
+        xingtu_tasks = types.ModuleType("agent.winport.xingtu_tasks")
+        xingtu_tasks.CLIENT_CAPABILITIES = []
+        remote_policy = types.ModuleType("agent.winport.remote_policy")
+        remote_policy.authorize_exec = lambda *args, **kwargs: {}
+        remote_policy.authorize_path = lambda *args, **kwargs: {}
+        remote_policy.audit = lambda *args, **kwargs: None
+        for module in (customer_paths, secure, subprocess_text, version,
+                       xingtu_tasks, remote_policy):
             sys.modules[module.__name__] = module
 
         cls.agentpoll = _load(
-            "agent.winport.agentpoll", ROOT / "client_patch/agentpoll.py")
+            "agent.winport.agentpoll", ROOT / "client/agent/winport/agentpoll.py")
         cls.remote_agent = _load(
-            "agent.winport.remote_agent", ROOT / "client_patch/remote_agent.py")
+            "agent.winport.remote_agent", ROOT / "client/agent/winport/remote_agent.py")
 
     def test_config_reads_device_identity_and_sends_it(self):
         tmp = tempfile.mkdtemp(prefix="agent-md-")
@@ -624,6 +633,9 @@ class RemoteOpsDeviceTests(unittest.TestCase):
         jsonio = types.ModuleType("agent.winport.jsonio")
         jsonio.write_json = lambda path, value: Path(path).write_text(
             json.dumps(value), encoding="utf-8")
+        jsonio.read_json = lambda path, default=None: (
+            json.loads(Path(path).read_text(encoding="utf-8"))
+            if Path(path).exists() else default)
         secure = sys.modules["agent.winport.secure_io"]
         secure.sha256_file = lambda path: ("0" * 64, Path(path).stat().st_size)
         secure.secure_stat = lambda path, root=None: Path(path).stat()
@@ -632,7 +644,7 @@ class RemoteOpsDeviceTests(unittest.TestCase):
         for module in (idem, jsonio):
             sys.modules[module.__name__] = module
         cls.remote_ops = _load(
-            "agent.winport.remote_ops", ROOT / "client_patch/remote_ops.py")
+            "agent.winport.remote_ops", ROOT / "client/agent/winport/remote_ops.py")
 
     def test_confirm_rejects_plan_from_another_device(self):
         root = Path(tempfile.mkdtemp(prefix="remote-ops-md-"))
@@ -650,13 +662,15 @@ class RemoteOpsDeviceTests(unittest.TestCase):
             device_id = "d-a"
             binding_epoch = 1
             token = "t"
-            cli_python = "python"
-            cli_root = None
+            cli_python = sys.executable
+            cli_root = str(ROOT / "client")
             program_dir = None
             command_timeout = 10
             layout = Layout()
 
         Config.layout.root = root
+        Config.layout.run = root / "run"
+        Config.layout.system = root / "system"
         result = self.remote_ops.confirm(Config(), {
             "receipt": {"receipt_id": "r"}, "plan": str(plan),
             "preview": str(preview), "confirm_token": "x"})

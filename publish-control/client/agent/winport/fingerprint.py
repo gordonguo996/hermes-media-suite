@@ -132,8 +132,23 @@ def _posix_components() -> dict:
         p = Path(path)
         try:
             if p.exists():
-                components[name] = p.read_text(encoding="utf-8").strip()
+                value = p.read_text(encoding="utf-8").strip()
+                if value:
+                    components[name] = value
         except OSError:
+            pass
+    # Minimal containers often ship an empty /etc/machine-id and no dbus id.
+    # Keep the Linux-only test fallback bindable (two stable components) so a
+    # missing host file cannot masquerade as a product trial failure.  Windows
+    # fingerprinting above is unchanged.
+    if not components:
+        try:
+            info = os.uname()
+            if info.nodename:
+                components["hostname"] = info.nodename
+            if info.machine:
+                components["machine"] = info.machine
+        except (AttributeError, OSError):
             pass
     return components
 

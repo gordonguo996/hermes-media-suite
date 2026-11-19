@@ -57,7 +57,7 @@
 
 ## 4. 多设备补丁部署记录（2026-10-28）
 
-- 已上线：server.py 43a06083…、bot.py c1eab2ce…、client_patch 三件（agentpoll c1b3d5f9…、remote_agent eb287022…、remote_ops bc0aec0e…）。
+- 历史记录：server.py 43a06083…、bot.py c1eab2ce…、旧 client_patch 三件（agentpoll c1b3d5f9…、remote_agent eb287022…、remote_ops bc0aec0e…）。**1.2.222 起 `publish-control/client_patch/` 已删除**，客户机源码以 `client/agent/winport/` 为准，升级只走完整安装包或 `client/tools/ota_patch.py`。
 - 迁移已应用：新增 device_material_claims / device_events 两表，customer_devices 加 9 列，删除 one_active_customer_device 唯一索引（一客户可多台 active）。行数未变（customers 2 / commands 80 / remote_ops 2054），integrity ok。
 - 服务：publish-control.service（新建 user unit，Restart=always，127.0.0.1:18977）与 feishu-bot.service 均已重启并 active。
 - 回滚：备份在 backups/deploy_multidevice_20261028_154831/（含 control.db 一致性快照与 BASELINE_SHA256.txt）。

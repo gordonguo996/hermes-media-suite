@@ -492,8 +492,19 @@ def cmd_publish_hold_clear(args):
     from .publish_guard import PublishHoldStore
     layout = _layout(args)
     result = PublishHoldStore(layout.run / "publish_holds.json").clear_manual(
-        args.channel, reason=args.reason)
-    print(json.dumps({"cleared": result, "channel": args.channel}))
+        args.channel, reason=args.reason, actor=args.actor,
+        reason_code=getattr(args, "reason_code", None))
+    payload = {"channel": args.channel, **result}
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return EXIT_OK
+
+
+def cmd_publish_hold_status(args):
+    from .publish_guard import PublishHoldStore
+    layout = _layout(args)
+    hold = PublishHoldStore(layout.run / "publish_holds.json").get(args.channel)
+    print(json.dumps({"channel": args.channel, "hold": hold},
+                     ensure_ascii=False, sort_keys=True))
     return EXIT_OK
 
 
@@ -981,7 +992,12 @@ def cmd_dry_run(args):
                               "xingtu_preflight": "deferred"},
                              ensure_ascii=False, indent=2))
             return EXIT_GATE_RED
-    wrote = write_preview(layout, preview, out=args.out, out_md=args.out_md)
+    if getattr(args, "no_write", False):
+        wrote = {"json": None, "md": None, "written": False,
+                 "confirm_token": preview["confirm_token"],
+                 "confirm_ref": preview["confirm_ref"]}
+    else:
+        wrote = write_preview(layout, preview, out=args.out, out_md=args.out_md)
     print(json.dumps({"ok": preview["ok"], **wrote,
                       "problems": preview["problems"],
                       "warnings": preview["warnings"],
@@ -1491,7 +1507,12 @@ def build_parser() -> argparse.ArgumentParser:
     hc = with_paths(sub.add_parser("publish-hold-clear"))
     hc.add_argument("--channel", required=True)
     hc.add_argument("--reason", required=True)
+    hc.add_argument("--actor", choices=("human", "bot"), default="human")
+    hc.add_argument("--reason-code", default=None)
     hc.set_defaults(func=cmd_publish_hold_clear)
+    hs = with_paths(sub.add_parser("publish-hold-status"))
+    hs.add_argument("--channel", required=True)
+    hs.set_defaults(func=cmd_publish_hold_status)
     with_paths(sub.add_parser("env-probe")).set_defaults(func=cmd_env_probe)
     sub.add_parser("fingerprint").set_defaults(func=cmd_fingerprint)
 
@@ -1600,6 +1621,8 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--plan", required=True)
     dr.add_argument("--out", default=None)
     dr.add_argument("--out-md", default=None)
+    dr.add_argument("--no-write", action="store_true",
+                    help="validate only; do not replace the stored preview files")
     dr.add_argument("--confirm-token", default=None,
                     help="verify a Feishu confirm token against a freshly derived preview")
     dr.add_argument("--license", default=None)

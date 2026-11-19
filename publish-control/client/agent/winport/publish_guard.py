@@ -41,8 +41,17 @@ NETWORK_ERROR = "network_error"
 SMS_VERIFICATION = "sms_verification"
 VERIFICATION_UNKNOWN = "verification_unknown"
 PUBLISH_UNKNOWN = "publish_unknown"
+LEASE_TIMEOUT = "lease_timeout"
+CHANNEL_UNBOUND = "channel_unbound"
 FAULT_KINDS = (CAPTCHA, RISK_CONTROL, LOGIN_LOST, NETWORK_ERROR, SMS_VERIFICATION,
-               VERIFICATION_UNKNOWN, PUBLISH_UNKNOWN)
+               VERIFICATION_UNKNOWN, PUBLISH_UNKNOWN, LEASE_TIMEOUT,
+               CHANNEL_UNBOUND)
+
+#: Who created a hold.  Records written before 1.2.222 have no source and are
+#: deliberately treated as human: an unknown brake must never be auto-released.
+HOLD_SOURCES = ("agent", "bot", "human")
+AUTO_CLEAR_REASON_CODES = frozenset({LEASE_TIMEOUT, PUBLISH_UNKNOWN,
+                                     CHANNEL_UNBOUND})
 
 ASCII_MID_RE = re.compile(r"[0-9]{19}\Z")
 
@@ -503,6 +512,23 @@ def classify_fault(evidence: dict | None) -> str | None:
     return None
 
 
+def normalize_hold(hold: dict | None) -> dict | None:
+    """Return a hold with source/reason_code, defaulting legacy rows to human."""
+    if not isinstance(hold, dict):
+        return hold
+    value = dict(hold)
+    source = value.get("source")
+    if source not in HOLD_SOURCES:
+        source = "human"
+    value["source"] = source
+    reason_code = value.get("reason_code")
+    if not isinstance(reason_code, str) or not reason_code.strip():
+        kind = value.get("kind")
+        reason_code = kind if source == "agent" and isinstance(kind, str) else ""
+    value["reason_code"] = str(reason_code or "")
+    return value
+
+
 class PublishHoldStore:
     """Persistent per-channel holds for captcha/risk/login/network faults."""
 
@@ -522,14 +548,20 @@ class PublishHoldStore:
         write_json(self.path, self.data)
 
     def set_hold(self, channel_id: str, kind: str, evidence: dict,
-                 *, reason: str = "", now=None) -> dict:
+                 *, reason: str = "", source: str = "agent",
+                 reason_code: str | None = None, now=None) -> dict:
         if kind not in FAULT_KINDS:
             raise ValueError(f"unknown fault kind {kind!r}")
+        if source not in HOLD_SOURCES:
+            raise ValueError(f"unknown hold source {source!r}")
         now = now or time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        code = str(reason_code or kind)
         with self.lock:
             self.reload()
             self.data.setdefault("holds", {})[channel_id] = {
                 "kind": kind,
+                "source": source,
+                "reason_code": code,
                 "reason": reason or kind,
                 "held_since": now,
                 "evidence": evidence or {},
@@ -542,15 +574,18 @@ class PublishHoldStore:
         key = hashlib.sha256(str(channel_id).encode("utf-8")).hexdigest()
         return self.path.with_name(self.path.name + ".emergency") / (key + ".json")
 
-    def persist_failure(self, channel_id, kind, evidence, *, reason):
+    def persist_failure(self, channel_id, kind, evidence, *, reason,
+                        source: str = "agent", reason_code: str | None = None):
         """Never throw from freezing; try independent durable fallback on error."""
         try:
-            self.set_hold(channel_id, kind, evidence, reason=reason)
+            self.set_hold(channel_id, kind, evidence, reason=reason,
+                          source=source, reason_code=reason_code)
             return {"persisted": True, "emergency": False}
         except Exception as exc:
             import json, os, sys
             marker = self._emergency_path(channel_id)
             record = {"channel_id": channel_id, "kind": kind, "reason": reason,
+                      "source": "human", "reason_code": "",
                       "primary_error": repr(exc), "held_since": time.time()}
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True)
@@ -567,33 +602,102 @@ class PublishHoldStore:
     def get(self, channel_id: str) -> dict | None:
         marker = self._emergency_path(channel_id)
         if marker.exists():
-            return {"kind": PUBLISH_UNKNOWN, "reason": "冻结主文件写入失败；须人工处理 emergency hold",
-                    "emergency_path": str(marker)}
+            return normalize_hold({
+                "kind": PUBLISH_UNKNOWN,
+                "source": "human", "reason_code": "",
+                "reason": "冻结主文件写入失败；须人工处理 emergency hold",
+                "emergency_path": str(marker)})
         self.reload()
-        return self.data.get("holds", {}).get(channel_id)
+        return normalize_hold(self.data.get("holds", {}).get(channel_id))
 
     def clear_if_online(self, channel_id: str, account_state: str) -> bool:
         """Health checks never remove an operator hold."""
         return False
 
-    def clear_manual(self, channel_id: str, *, reason: str) -> bool:
+    def _audit(self, channel_id, *, actor, hold, result, count=0,
+               detail="", reason=""):
+        record = {
+            "at": time.time(),
+            "channel_id": str(channel_id),
+            "actor": str(actor),
+            "source": str((hold or {}).get("source") or "human"),
+            "reason_code": str((hold or {}).get("reason_code") or ""),
+            "kind": str((hold or {}).get("kind") or ""),
+            "count_24h": int(count or 0),
+            "result": str(result),
+            "detail": str(detail or ""),
+            "reason": str(reason or ""),
+        }
+        try:
+            from .jsonio import append_jsonl
+            append_jsonl(self.path.with_name("publish_hold_audit.jsonl"), record)
+        except Exception as exc:
+            record["audit_error"] = repr(exc)
+        return record
+
+    def clear_manual(self, channel_id: str, *, reason: str,
+                     actor: str = "human", reason_code: str | None = None) -> dict:
         if not reason or not reason.strip():
             raise ValueError("manual recovery reason required")
+        if actor not in ("human", "bot"):
+            raise ValueError(f"unknown clear actor {actor!r}")
         with self.lock:
             self.reload()
-            hold = self.data.get("holds", {}).pop(channel_id, None)
+            raw = self.data.get("holds", {}).get(channel_id)
             marker = self._emergency_path(channel_id)
-            if marker.exists():
-                hold = hold or {"kind": PUBLISH_UNKNOWN, "emergency_path": str(marker)}
+            hold = normalize_hold(raw)
+            if marker.exists() and hold is None:
+                hold = normalize_hold({"kind": PUBLISH_UNKNOWN,
+                                       "source": "human", "reason_code": "",
+                                       "emergency_path": str(marker)})
             if not hold:
-                return False
+                audit = self._audit(channel_id, actor=actor, hold=None,
+                                    result="not_found", reason=reason)
+                return {"cleared": False, "refused": False, "code": "not_found",
+                        "channel": str(channel_id), "audit": audit}
+            if actor == "bot":
+                if hold.get("source") != "agent":
+                    audit = self._audit(channel_id, actor=actor, hold=hold,
+                                        result="refused",
+                                        detail="source_not_agent", reason=reason)
+                    return {"cleared": False, "refused": True,
+                            "code": "source_not_agent",
+                            "source": hold.get("source"),
+                            "reason_code": hold.get("reason_code"),
+                            "channel": str(channel_id), "audit": audit}
+                if hold.get("reason_code") not in AUTO_CLEAR_REASON_CODES:
+                    audit = self._audit(channel_id, actor=actor, hold=hold,
+                                        result="refused",
+                                        detail="reason_not_allowed", reason=reason)
+                    return {"cleared": False, "refused": True,
+                            "code": "reason_not_allowed",
+                            "source": hold.get("source"),
+                            "reason_code": hold.get("reason_code"),
+                            "channel": str(channel_id), "audit": audit}
+                if reason_code and reason_code != hold.get("reason_code"):
+                    audit = self._audit(channel_id, actor=actor, hold=hold,
+                                        result="refused",
+                                        detail="reason_code_mismatch", reason=reason)
+                    return {"cleared": False, "refused": True,
+                            "code": "reason_code_mismatch",
+                            "source": hold.get("source"),
+                            "reason_code": hold.get("reason_code"),
+                            "channel": str(channel_id), "audit": audit}
+            self.data.get("holds", {}).pop(channel_id, None)
             self.data.setdefault("resolved", []).append({
                 "channel_id": channel_id, "hold": hold, "reason": reason,
-                "at": time.time()})
+                "actor": actor, "source": hold.get("source"),
+                "reason_code": hold.get("reason_code"),
+                "result": "cleared", "at": time.time()})
             self._save_locked()
             if marker.exists():
                 marker.unlink()
-            return True
+            audit = self._audit(channel_id, actor=actor, hold=hold,
+                                result="cleared", reason=reason)
+            return {"cleared": True, "refused": False, "code": "cleared",
+                    "source": hold.get("source"),
+                    "reason_code": hold.get("reason_code"),
+                    "channel": str(channel_id), "audit": audit}
 
     def all_holds(self) -> dict:
         self.reload()
@@ -604,7 +708,11 @@ class PublishHoldStore:
             for marker in folder.glob("*.json"):
                 try:
                     entry = json.loads(marker.read_text(encoding="utf-8"))
-                    holds[entry["channel_id"]] = entry
+                    entry.setdefault("source", "human")
+                    entry.setdefault("reason_code", "")
+                    holds[entry["channel_id"]] = normalize_hold(entry)
                 except Exception:
-                    holds[marker.stem] = {"kind": PUBLISH_UNKNOWN, "reason": "damaged emergency hold"}
-        return holds
+                    holds[marker.stem] = normalize_hold({
+                        "kind": PUBLISH_UNKNOWN, "source": "human",
+                        "reason_code": "", "reason": "damaged emergency hold"})
+        return {channel: normalize_hold(hold) for channel, hold in holds.items()}

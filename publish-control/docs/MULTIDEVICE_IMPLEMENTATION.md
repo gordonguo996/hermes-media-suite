@@ -287,7 +287,7 @@ OK
 
 1. **bot 基线不是真实生产文件。** 仓库原先没有 `feishu_publish_bot/bot.py`；本补丁基于 `fix_evidence_p0_2_p1_1/bot.py`（与 `/tmp` 基线 SHA256 一致）。部署前必须把补丁重新落到真实生产 bot 上做三方合并，不能直接覆盖。
 2. **`feishu_publish_bot/receipt_issue.py`、`ed25519_pure.py` 是随 bot 一起补入的。** `receipt_issue.py` 本次新增设备字段签名；`ed25519_pure.py` 未改。
-3. **客户机代码未部署。** `client_patch/agentpoll.py`、`remote_agent.py`、`remote_ops.py` 需要按客户机现有 MANIFEST 规则同步哈希并走维护窗口；本轮没有改 MANIFEST/VERSION。
+3. **客户机代码未部署。** 本轮交付时用的是 `client_patch/agentpoll.py`、`remote_agent.py`、`remote_ops.py`；**1.2.222 起 `client_patch/` 已删除，客户机源码以 `client/agent/winport/` 为准**（升级走签名完整安装包或 `client/tools/ota_patch.py`，见 `KNOWN_ISSUES.md`）。仍需按客户机 MANIFEST 规则同步哈希并走维护窗口；本轮没有改 MANIFEST/VERSION。
 4. **没有真实 Windows/飞书/网络联调。** 所有客户机、bot、remote op 证据均为 mock/离线测试；不能据此声称生产可用。
 5. **stage2 ledger 顶层未新增设备列。** 本轮没有修改客户机 `agent/winport/publish_exec.py` / `stage2_ledger.py`。实际可区分方式：
    - `CONSUMED` 条目的 `publish_evidence.receipt` 内含签名后的 `device_id` / `binding_epoch`；

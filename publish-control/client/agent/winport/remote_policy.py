@@ -53,6 +53,7 @@ ALLOWED_CLI = frozenset({
     "ledger-unblock", "export-files", "agent-health",
     # existing product commands the bot uses
     "dry-run", "publish", "publish-enqueue", "publish-hold-clear",
+    "publish-hold-status",
     "xingtu-tasks", "collect-all", "collect-offline", "report",
     "report-record", "report-export", "env-open", "env-probe",
     "environments", "channels", "state", "selftest", "instance-check",
