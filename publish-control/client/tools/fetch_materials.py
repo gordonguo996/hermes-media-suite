@@ -134,6 +134,26 @@ def fetch_wheels(lock, out):
     return {"count": len(got)}
 
 
+def _parse_signature_json(out):
+    """从 PowerShell 的 JSON 输出里取出签名结论；拿不到就给 None。"""
+    for line in reversed((out or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        data.setdefault("status", "")
+        data.setdefault("subject", "")
+        data.setdefault("detail", "")
+        if not data["status"]:
+            data["status"] = "ERROR"
+            data["detail"] = data["detail"] or "Get-AuthenticodeSignature 返回空对象"
+        return data
+    return None
+
+
 def _authenticode(path):
     """Windows 上取签名结论；其它系统返回 None。
 
@@ -144,6 +164,7 @@ def _authenticode(path):
         return None
     script = (
         "$ErrorActionPreference='Stop';"
+        "Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue;"
         "try{"
         "$s=Get-AuthenticodeSignature -LiteralPath $env:HMS_TARGET;"
         "$subj=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{''};"
@@ -154,24 +175,22 @@ def _authenticode(path):
     )
     env = dict(os.environ)
     env["HMS_TARGET"] = str(path)
-    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                         capture_output=True, text=True, encoding="utf-8",
-                         errors="replace", env=env)
+    shells = ["powershell"]
+    if shutil.which("pwsh"):
+        shells.append("pwsh")  # 5.1 偶尔加载不到 Security 模块（CI 实测），7 一般可以
+    res = None
+    data = None
+    for shell in shells:
+        res = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", env=env)
+        out = (res.stdout or "").strip()
+        data = _parse_signature_json(out)
+        if data is None or data["status"].lower() != "error":
+            break
     out = (res.stdout or "").strip()
-    for line in reversed(out.splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                data = json.loads(line)
-            except ValueError:
-                continue
-            data.setdefault("status", "")
-            data.setdefault("subject", "")
-            data.setdefault("detail", "")
-            if not data["status"]:
-                data["status"] = "ERROR"
-                data["detail"] = data["detail"] or "Get-AuthenticodeSignature 返回空对象"
-            return data
+    if data is not None:
+        return data
     return {"status": "ERROR", "subject": "",
             "detail": ((res.stderr or out or "powershell 无输出").strip())[:400]}
 

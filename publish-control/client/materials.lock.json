@@ -1,4 +1,4 @@
-{
+﻿{
   "schema": "materials-lock/1",
   "note": "每一项离线材料的官方来源与哈希。tools/fetch_materials.py 按此下载、校验并整理成 build_setup.py --materials 需要的目录。基线是已发布的 1.2.218 包（逐项哈希核对过）。",
   "baseline_release": "v1.2.218",

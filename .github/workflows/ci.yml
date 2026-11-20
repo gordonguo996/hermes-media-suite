@@ -191,12 +191,20 @@ jobs:
         run: |
           $v = (Get-Content VERSION -Raw).Trim()
           python tools/package_smoke.py --setup "$env:RUNNER_TEMP\out\setup.exe" --version $v
+      - name: Collect the evidence (materials report + install log)
+        if: always()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:RUNNER_TEMP 'package-report'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          $report = Join-Path $env:RUNNER_TEMP 'payload-materials\materials.report.json'
+          if (Test-Path $report) { Copy-Item $report $dst }
+          $log = Join-Path $env:LOCALAPPDATA 'HuolongAgent\publish-worker\logs\install.log'
+          if (Test-Path $log) { Copy-Item $log $dst }
       - name: Upload materials report and install log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: package-report
-          path: |
-            ${{ runner.temp }}/payload-materials/materials.report.json
-            ~/AppData/Local/HuolongAgent/publish-worker/logs/install.log
+          path: ${{ runner.temp }}/package-report
           if-no-files-found: ignore

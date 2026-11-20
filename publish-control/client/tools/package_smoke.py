@@ -46,6 +46,11 @@ def main():
     py = app / "runtime" / "python.exe"
     if not py.exists():
         fail("安装后没有 %s" % py)
+    # 依赖装在数据目录的 venv 里（bootstrap_py.py step_wheels），不在 runtime 那棵树上。
+    # 用 runtime\python.exe 跑 selftest 会一律红在 playwright/pystray——那是拿错了解释器。
+    venv_py = data / ".venv" / "Scripts" / "python.exe"
+    if not venv_py.exists():
+        fail("安装后没有 %s（bootstrap 没建 venv？看 install.log）" % venv_py)
     got = (app / "VERSION").read_text(encoding="utf-8-sig").strip()
     if got != args.version:
         fail("安装目录 VERSION=%s，期望 %s" % (got, args.version))
@@ -56,11 +61,15 @@ def main():
         fail("program-path.txt 指向 %s，不是固定目录 %s" % (recorded, app))
 
     env = dict(os.environ, PYTHONUTF8="1")
-    res = run([py, "-m", "agent.winport.cli", "selftest"], cwd=str(app), env=env,
+    res = run([venv_py, "-m", "agent.winport.cli", "selftest"], cwd=str(app), env=env,
               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
     print(res.stdout[-3000:], res.stderr[-2000:])
     if res.returncode != 0:
-        fail("selftest 返回 %s" % res.returncode)
+        log = data / "logs" / "install.log"
+        if log.exists():
+            print("---- install.log tail ----", file=sys.stderr)
+            print(log.read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+        fail("selftest 返回 %s（解释器 %s）" % (res.returncode, venv_py))
 
     # 覆盖升级：放一个只存在于旧目录的标记文件，升级后它必须消失（不留旧版残渣），
     # 同时数据目录里的标记必须还在（升级不动数据）。
@@ -78,6 +87,8 @@ def main():
         fail("升级成功后 .old 回滚目录没清掉")
     if not py.exists():
         fail("升级后运行时丢失")
+    if not venv_py.exists():
+        fail("升级后 venv 丢失")
 
     un = app / "uninstall.exe"
     if not un.exists():
