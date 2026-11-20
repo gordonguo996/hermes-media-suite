@@ -66,7 +66,7 @@
     "revision": "2070",
     "optional": true,
     "include_in_package": false,
-    "note": "1.2.223 起不再进包：服务端 252 条发布记录 0 条走 WebKit，客户机配置里该槽位也是关闭的空目录（对方实测）。",
+    "note": "1.2.223 起不再进包：服务端 control.db 可查的 252 条远程发布记录中 0 条走 WebKit；在线机实机确认槽位关闭且 profile 目录为空。qisi 两台机器当时连不上，未实机核对。",
     "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/webkit/2070/webkit-win64.zip",
     "sha256": "f2ca61340c136eff4e56cd3ebbd3c18056b49843002ca827b5ea3f69b72b664d",
     "extract_to": "browsers/webkit-2070",
@@ -89,7 +89,8 @@
     "baseline_sha256": "d7e898f080258c41996846a423b77bfdab0c14ea1e38afddfdf496c286fc7983",
     "baseline_size": 167031224,
     "signer": "Google LLC",
-    "extract_to": "chrome-offline/ChromeStandaloneSetup64.exe"
+    "extract_to": "chrome-offline/ChromeStandaloneSetup64.exe",
+    "baseline_note": "baseline_sha256/size 是 11-15 取到的快照，不是当前值（当天直链已变为 173,946,808 字节）。"
   },
   "wheels": {
     "lock_file": "wheels.lock.json",
