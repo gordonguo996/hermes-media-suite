@@ -100,9 +100,34 @@ end:
 SectionEnd
 
 Section "Uninstall"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$d=''$INSTDIR''; Get-CimInstance Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 2"'
+  ; 1. 先拆自启动。守护进程/计划任务会在删除过程中把程序重新拉起来，导致目录删不干净——
+  ;    这一步必须排在杀进程和删目录之前。
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "ManjuPublishAssistantSupervisor" /F'
   Pop $0
-  RMDir /r "$INSTDIR"
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "ManjuPublishAssistant" /F'
+  Pop $0
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ManjuPublishAssistantSupervisor"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ManjuPublishAssistant"
+
+  ; 2. 停掉安装目录内的进程。守护进程的解释器在数据目录的 venv 里，
+  ;    只看 ExecutablePath 停不掉它，所以命令行里带安装目录的也算。
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$d=''$INSTDIR''; Get-CimInstance Win32_Process | Where-Object { ($$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase)) -or ($$_.CommandLine -and $$_.CommandLine.IndexOf($$d, [StringComparison]::OrdinalIgnoreCase) -ge 0) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
+  Pop $0
+
+  ; 3. 删程序目录。刚杀完进程文件可能还被占着，删不掉就等一会儿重试，最多 4 次。
+  RMDir /r "$INSTDIR.old"
+  StrCpy $1 0
+  uninstall_retry:
+    RMDir /r "$INSTDIR"
+    ${IfNot} ${FileExists} "$INSTDIR\*.*"
+      Goto uninstall_done
+    ${EndIf}
+    IntOp $1 $1 + 1
+    ${If} $1 < 4
+      ExecWait '"$SYSDIR\cmd.exe" /d /c "timeout /t 3 /nobreak >nul"'
+      Goto uninstall_retry
+    ${EndIf}
+  uninstall_done:
   DeleteRegKey HKCU "${UNKEY}"
   DetailPrint "程序已卸载。账号、授权和日志保留在 $LOCALAPPDATA\HuolongAgent\publish-worker，如需彻底清除请手动删除该文件夹。"
 SectionEnd

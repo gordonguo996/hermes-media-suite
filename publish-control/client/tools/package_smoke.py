@@ -96,11 +96,13 @@ def main():
     res = run([un, "/S"], timeout=600)
     # NSIS 卸载器会把自己复制到临时目录再运行，/S 下先返回；等目录消失。
     import time
-    for _ in range(60):
+    for _ in range(120):
         if not app.exists():
             break
         time.sleep(1)
     if app.exists():
+        rest = sorted(x.relative_to(app).as_posix() for x in app.rglob("*"))
+        print("卸载后仍残留 %d 项，前 15 项：%s" % (len(rest), rest[:15]), file=sys.stderr)
         fail("卸载后程序目录还在")
     if not keep.exists():
         fail("卸载动了数据目录")
