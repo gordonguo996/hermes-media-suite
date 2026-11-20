@@ -4,31 +4,21 @@
   "baseline_release": "v1.2.218",
   "python": {
     "version": "3.11.9",
-    "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
-    "sha256": "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
-    "md5": "e8dcd502e34932eebcaf1be056d5cbcd",
-    "install_args": [
-      "/quiet",
-      "InstallAllUsers=0",
-      "Include_launcher=0",
-      "Include_test=0",
-      "Include_doc=0",
-      "Include_tcltk=0",
-      "Include_pip=1",
-      "Include_dev=1",
-      "AssociateFiles=0",
-      "Shortcuts=0",
-      "PrependPath=0",
-      "CompileAll=0"
-    ],
+    "source": "nuget 的 python.3.11.9 包里的 tools/ 目录（不是 embeddable；与 1.2.218 包逐文件一致）",
+    "url": "https://globalcdn.nuget.org/packages/python.3.11.9.nupkg",
+    "sha256": "9283876d58c017e0e846f95b490da3bca0fc0a6ee1134b2870677cfb7eec3c67",
+    "member_prefix": "tools/",
     "rename_to_rt": [
       "vcruntime140.dll",
       "vcruntime140_1.dll"
     ],
+    "drop_prefixes": [
+      "Lib/site-packages/pip/_vendor/colorama/tests/"
+    ],
     "baseline_tree": {
-      "files": 1779,
-      "size": 46038031,
-      "tree_sha256": "4e583f33ead9ab36c6b5f1dd4ebff2b8cc24809fa643203b46af148e58453ccd"
+      "files": 1759,
+      "size": 45583502,
+      "tree_sha256": "a9b03e007f712891483fef1e11e10c51392fc7a34e7affaad2bbecb4dc3485d5"
     },
     "key_files": {
       "python.exe": "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec",
@@ -37,8 +27,7 @@
       "python3.dll": "db84bc052cfb121fe4db36242ba5f1d2c031b600ef5d8d752cf25b7c02b6bac6",
       "vcruntime140.dll.__rt": "4d292623516f65c80482081e62d5dadb759dc16e851de5db24c3cbb57b87db83",
       "vcruntime140_1.dll.__rt": "a113f192195f245f17389e6ecbed8005990bcb2476ddad33f7c4c6c86327afe5"
-    },
-    "unverified": "key_files 与 baseline_tree 取自 1.2.218 包；尚未在干净 Windows 上用官方安装包重装并逐文件比对，由 CI 的 materials 任务首次运行时给出差异清单。"
+    }
   },
   "ffmpeg": {
     "version": "9.0.2-essentials_build",
@@ -76,8 +65,8 @@
   "webkit": {
     "revision": "2070",
     "optional": true,
-    "include_in_package": true,
-    "note": "134 MB，占整包约 45%。是否还有客户在用待对方确认；确认没有后把 include_in_package 改为 false 即可从包里去掉。",
+    "include_in_package": false,
+    "note": "1.2.223 起不再进包：服务端 252 条发布记录 0 条走 WebKit，客户机配置里该槽位也是关闭的空目录（对方实测）。",
     "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/webkit/2070/webkit-win64.zip",
     "sha256": "f2ca61340c136eff4e56cd3ebbd3c18056b49843002ca827b5ea3f69b72b664d",
     "extract_to": "browsers/webkit-2070",

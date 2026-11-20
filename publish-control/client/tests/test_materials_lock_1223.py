@@ -36,7 +36,7 @@ class LockFileTests(unittest.TestCase):
             self.assertRegex(value, SHA, where)
 
     def test_downloads_are_https_from_known_hosts(self):
-        hosts = {"www.python.org", "www.gyan.dev", "cdn.playwright.dev", "dl.google.com"}
+        hosts = {"globalcdn.nuget.org", "www.gyan.dev", "cdn.playwright.dev", "dl.google.com"}
         for name in ("python", "ffmpeg", "playwright_ffmpeg", "webkit", "chrome_offline"):
             url = self.lock[name]["url"]
             self.assertTrue(url.startswith("https://"), url)

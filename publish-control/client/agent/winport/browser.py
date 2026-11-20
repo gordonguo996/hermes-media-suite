@@ -126,10 +126,10 @@ def plan_open(layout, channel, *, profile_dir=None, chrome_path=None,
         plan["command"] = chrome.build_launch_args(
             exe, profile_dir, channel.debug_port or 0, channel.login_url)
         return plan
-    # Optional legacy WebKit engine: Playwright persistent context (no CDP port)
-    plan["command"] = [str(venv_python(layout)), "-m", "winport.playwright_launch",
-                       "--profile", str(profile_dir), "--url", channel.login_url,
-                       "--data", str(layout.data)]
+    # 1.2.223: the WebKit engine is retired (no customer used it; its 134 MB
+    # runtime no longer ships).  Say so plainly instead of starting nothing.
+    plan["error"] = ("%s 使用的 WebKit 引擎已停用，请改用 Chrome（登录位引擎设为 chrome）。"
+                     % channel.channel_id)
     return plan
 
 

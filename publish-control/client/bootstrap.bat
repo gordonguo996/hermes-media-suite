@@ -12,7 +12,7 @@ if not exist "%PY%" (
 )
 rem --- restore VC runtime DLLs before runtime\python.exe starts (they ship as *.dll.__rt) ---
 set "VCDLLS=vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll concrt140.dll"
-for %%D in ("%HERE%runtime" "%HERE%browsers\webkit-2070") do if exist "%%~D" for %%F in (%VCDLLS%) do if exist "%%~D\%%F.__rt" if not exist "%%~D\%%F" copy /y "%%~D\%%F.__rt" "%%~D\%%F" >nul 2>&1
+for %%D in ("%HERE%runtime") do if exist "%%~D" for %%F in (%VCDLLS%) do if exist "%%~D\%%F.__rt" if not exist "%%~D\%%F" copy /y "%%~D\%%F.__rt" "%%~D\%%F" >nul 2>&1
 
 "%PY%" "%HERE%scripts\bootstrap_py.py" --program "%HERE%."
 set "RC=%ERRORLEVEL%"

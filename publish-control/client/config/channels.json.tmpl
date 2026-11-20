@@ -1,6 +1,9 @@
 ﻿{
-  "_note": "登录位（通道）登记表。一个 channel = 一个账号 = 一个独立登录态目录 + 一个独立调试端口 + 一个独立状态灯；掉线只提醒掉的那个。抖音/星图/视频号/小红书/公众号是内置预设，本文件可覆盖 login_url/check_url/端口/昵称；加平台只改本文件、不改代码：复制一段、把 platform 换成本文件 platform_presets 里没有的新名字时，请同时补 login_url/check_url。debug_port 写 null 表示该通道没有 CDP 端口（WebKit），不要瞎编一个。",
-  "panel": { "host": "127.0.0.1", "port": 9223 },
+  "_note": "登录位（通道）登记表。一个 channel = 一个账号 = 一个独立登录态目录 + 一个独立调试端口 + 一个独立状态灯；掉线只提醒掉的那个。抖音/星图/视频号/小红书/公众号是内置预设，本文件可覆盖 login_url/check_url/端口/昵称；加平台只改本文件、不改代码：复制一段、把 platform 换成本文件 platform_presets 里没有的新名字时，请同时补 login_url/check_url。所有通道都走 Chrome（CDP 端口），WebKit 已停用。",
+  "panel": {
+    "host": "127.0.0.1",
+    "port": 9223
+  },
   "channels": [
     {
       "channel_id": "douyin-001",
@@ -11,16 +14,6 @@
       "profile": "douyin",
       "debug_port": 9224,
       "enabled": true
-    },
-    {
-      "channel_id": "douyin-002",
-      "platform": "douyin",
-      "nickname": "蜡笔新小漫",
-      "account_id": "douyin-pilot-002",
-      "engine": "webkit",
-      "profile": "douyin-webkit",
-      "debug_port": null,
-      "enabled": false
     },
     {
       "channel_id": "xingtu-001",

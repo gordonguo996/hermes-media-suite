@@ -4,7 +4,7 @@
 
     python tools/fetch_materials.py --out <空目录> [--cache <下载缓存>] [--skip-runtime] [--no-webkit]
 
-运行时（Python）需要在 Windows 上用官方安装包安装到临时目录，其余项在任何系统上都能取。
+全部在任何系统上都能取（运行时来自 NuGet 的 python 包）。
 """
 from __future__ import annotations
 
@@ -171,24 +171,27 @@ def fetch_chrome(lock, cache, out, unchecked=False):
 
 
 def fetch_runtime(lock, cache, out):
-    if os.name != "nt":
-        raise MaterialError("运行时需要在 Windows 上用官方安装包安装；非 Windows 请加 --skip-runtime。")
+    """runtime/ = NuGet python.3.11.9 的 tools/；两个 VC DLL 改名 .__rt，删 colorama 测试文件。
+    任何系统都能取，不需要运行安装程序。"""
     cfg = lock["python"]
-    exe = download(cfg["url"], cache / "python-installer.exe", cfg["sha256"])
-    work = Path(tempfile.mkdtemp(prefix="hms-py-"))
-    try:
-        target = work / "inst"
-        subprocess.run([str(exe)] + cfg["install_args"] + ["TargetDir=" + str(target)],
-                       check=True, timeout=900)
-        for name in cfg["rename_to_rt"]:
-            src = target / name
-            if src.exists():
-                src.rename(target / (name + ".__rt"))
-        dest = out / "runtime"
-        shutil.copytree(target, dest)
-    finally:
-        # 安装器是 per-user 安装，不留注册信息：临时目录删掉即可。
-        shutil.rmtree(work, ignore_errors=True)
+    archive = download(cfg["url"], cache / "python.nupkg", cfg["sha256"])
+    dest = out / "runtime"
+    dest.mkdir(parents=True)
+    prefix = cfg["member_prefix"]
+    with zipfile.ZipFile(archive) as zf:
+        for info in zf.infolist():
+            if info.is_dir() or not info.filename.startswith(prefix):
+                continue
+            rel = info.filename[len(prefix):]
+            if any(rel.startswith(p) for p in cfg["drop_prefixes"]):
+                continue
+            target = (dest / rel).resolve()
+            if dest.resolve() not in target.parents:
+                raise MaterialError("压缩包含越界路径：" + info.filename)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(zf.read(info))
+    for name in cfg["rename_to_rt"]:
+        (dest / name).rename(dest / (name + ".__rt"))
     wrong = {}
     for rel, want in cfg["key_files"].items():
         p = dest / rel
@@ -197,7 +200,7 @@ def fetch_runtime(lock, cache, out):
             wrong[rel] = got
     tree = tree_sha256(dest)
     return {"key_file_mismatch": wrong, "tree": tree, "baseline": cfg["baseline_tree"],
-            "tree_matches_baseline": tree == cfg["baseline_tree"]}
+            "status": "match" if tree == cfg["baseline_tree"] and not wrong else "differs"}
 
 
 def main():
@@ -207,8 +210,6 @@ def main():
     ap.add_argument("--skip-runtime", action="store_true")
     ap.add_argument("--no-webkit", action="store_true", help="不取 WebKit（对方确认没人用后）")
     ap.add_argument("--chrome-unchecked", action="store_true", help="仅调试：非 Windows 不验签")
-    ap.add_argument("--strict-tree", action="store_true",
-                    help="runtime/浏览器目录与基线不逐文件一致就失败")
     args = ap.parse_args()
     lock = json.loads(LOCK.read_text(encoding="utf-8-sig"))
     out = args.out.resolve()
@@ -231,8 +232,6 @@ def main():
         sys.exit(1)
     bad = [k for k, v in report.items() if isinstance(v, dict) and (
         v.get("status") == "differs" or v.get("key_file_mismatch"))]
-    if args.strict_tree and report.get("runtime", {}).get("tree_matches_baseline") is False:
-        bad.append("runtime-tree")
     (out / "materials.report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))

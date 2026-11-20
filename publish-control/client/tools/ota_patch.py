@@ -55,7 +55,7 @@ from winport import updater  # noqa: E402
 CLIENT_PREFIX = "publish-control/client/"
 VERSION_PATH = CLIENT_PREFIX + "VERSION"
 POLICY_PATH = CLIENT / "tools" / "ota_policy.json"
-DEV_PREFIXES = ("tests/", "tools/")
+DEV_PREFIXES = ("tests/", "tools/", "installer/", "materials.lock.json")  # build-time only: never in the package
 DOC_SUFFIXES = (".md", ".txt", ".pdf", ".png", ".jpg")   # not read by the program
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 FILE_MODE = 0o644

@@ -59,7 +59,7 @@ def account_from_entry(entry: dict) -> Account:
         return Account(
             account_id=entry["account_id"],
             nickname=entry.get("nickname", entry["account_id"]),
-            engine=entry.get("engine", ENGINE_WEBKIT),
+            engine=entry.get("engine", ENGINE_CHROME),
             profile_name=entry.get("profile", entry["account_id"]),
             cdp_port=entry.get("cdp_port"),
             ready=bool(entry.get("ready", True)),
