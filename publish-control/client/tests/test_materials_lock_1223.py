@@ -97,6 +97,55 @@ class ChromeVerdictTests(unittest.TestCase):
             fetch_materials.chrome_verdict(None, "2" * 64, self.cfg)
 
 
+class DownloadRetryTests(unittest.TestCase):
+    """1.2.223: 官方源偶尔 503（CI 实测 gyan.dev），一次失败不该让整条链路红。"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+        self.dest = Path(self.tmp) / "x.bin"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_transient_error_is_retried(self):
+        import urllib.error
+        calls = []
+
+        def flaky(url, dest, tmp):
+            calls.append(1)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)
+            Path(tmp).write_bytes(b"payload")
+
+        original = fetch_materials._download_once
+        fetch_materials._download_once = flaky
+        try:
+            got = fetch_materials.download("https://example.invalid/x", self.dest, None, attempts=3)
+        finally:
+            fetch_materials._download_once = original
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(got.read_bytes(), b"payload")
+
+    def test_permanent_error_fails_without_spinning(self):
+        import urllib.error
+        calls = []
+
+        def missing(url, dest, tmp):
+            calls.append(1)
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        original = fetch_materials._download_once
+        fetch_materials._download_once = missing
+        try:
+            with self.assertRaises(fetch_materials.MaterialError):
+                fetch_materials.download("https://example.invalid/x", self.dest, None, attempts=5)
+        finally:
+            fetch_materials._download_once = original
+        self.assertEqual(len(calls), 1)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.nsi = (CLIENT / "installer" / "setup.nsi").read_text(encoding="utf-8-sig")

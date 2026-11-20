@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -51,15 +52,32 @@ def tree_sha256(root):
     return {"files": files, "size": size, "tree_sha256": h.hexdigest()}
 
 
-def download(url, dest, sha256=None):
+def _download_once(url, dest, tmp):
+    req = urllib.request.Request(url, headers={"User-Agent": "hermes-materials/1"})
+    with urllib.request.urlopen(req, timeout=300) as resp, open(tmp, "wb") as out:
+        shutil.copyfileobj(resp, out, 1 << 20)
+
+
+def download(url, dest, sha256=None, attempts=5):
     dest = Path(dest)
     if dest.exists() and sha256 and sha256_file(dest) == sha256:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    req = urllib.request.Request(url, headers={"User-Agent": "hermes-materials/1"})
-    with urllib.request.urlopen(req, timeout=300) as resp, open(tmp, "wb") as out:
-        shutil.copyfileobj(resp, out, 1 << 20)
+    # 官方源偶尔 503/超时（CI 实测 gyan.dev 会），一律退避重试，不要一次失败就让整条链路红。
+    for attempt in range(attempts):
+        try:
+            _download_once(url, dest, tmp)
+            break
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            code = getattr(exc, "code", None)
+            fatal = code is not None and 400 <= code < 500 and code not in (408, 429)
+            if fatal or attempt == attempts - 1:
+                raise MaterialError("下载失败 %s（第 %d 次，%s）" % (url, attempt + 1, exc)) from exc
+            delay = 2 ** attempt
+            print("WARN: %s 第 %d 次失败（%s），%ds 后重试" % (url, attempt + 1, exc, delay),
+                  file=sys.stderr)
+            time.sleep(delay)
     got = sha256_file(tmp)
     if sha256 and got != sha256:
         tmp.unlink()
