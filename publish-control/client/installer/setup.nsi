@@ -102,19 +102,36 @@ SectionEnd
 Section "Uninstall"
   ; 1. 先拆自启动。守护进程/计划任务会在删除过程中把程序重新拉起来，导致目录删不干净——
   ;    这一步必须排在杀进程和删目录之前。
+  ;    真实的自启动名（1.2.178 起）：计划任务 HuolongAgent\Agent，Run 值 HuolongAgentAgent。
+  ;    下面 Manju* 是更早版本留下的名字，一并清掉，别让老机器带着自启动残留。
+  ${If} ${FileExists} "$INSTDIR\scripts\install-autostart.ps1"
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\install-autostart.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker" -Remove'
+    Pop $0
+  ${EndIf}
+  nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "HuolongAgent\Agent" /F'
+  Pop $0
   nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "ManjuPublishAssistantSupervisor" /F'
   Pop $0
   nsExec::ExecToLog '"$SYSDIR\schtasks.exe" /Delete /TN "ManjuPublishAssistant" /F'
   Pop $0
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "HuolongAgentAgent"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ManjuPublishAssistantSupervisor"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ManjuPublishAssistant"
 
-  ; 2. 停掉安装目录内的进程。守护进程的解释器在数据目录的 venv 里，
-  ;    只看 ExecutablePath 停不掉它，所以命令行里带安装目录的也算。
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "$$d=''$INSTDIR''; Get-CimInstance Win32_Process | Where-Object { ($$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d, [StringComparison]::OrdinalIgnoreCase)) -or ($$_.CommandLine -and $$_.CommandLine.IndexOf($$d, [StringComparison]::OrdinalIgnoreCase) -ge 0) } | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }"'
-  Pop $0
+  ; 2. 停掉所有占用安装目录的进程。agent 跑在数据目录的 venv 里
+  ;    （publish-worker\.venv\Scripts\python.exe），它通过 pyvenv.cfg 从
+  ;    $INSTDIR\runtime\DLLs 加载 python311.dll 和标准库 .pyd——这样的进程既不在安装目录里、
+  ;    命令行也可能不带安装目录，老版本两条判据都匹配不到，runtime 目录于是卸载后仍在
+  ;    （CI 44741303657：残留 21 项，全是 runtime/DLLs 下的 pyd 和 openssl dll）。
+  ;    uninstall-quiesce.ps1 认三种进程：程序目录内的、数据目录内的、命令行里带这两个目录的
+  ;    （wscript supervisor、用数据目录存 profile 的 Chrome），先杀父进程再杀子进程，跑三轮。
+  ${If} ${FileExists} "$INSTDIR\scripts\uninstall-quiesce.ps1"
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker"'
+    Pop $0
+  ${EndIf}
 
-  ; 3. 删程序目录。刚杀完进程文件可能还被占着，删不掉就等一会儿重试，最多 4 次。
+  ; 3. 删程序目录。刚杀完进程文件可能还被占着，删不掉就等一会儿重试，最多 4 次；
+  ;    每次重试前再清一遍进程，防止守护进程刚把子进程拉起来。
   RMDir /r "$INSTDIR.old"
   StrCpy $1 0
   uninstall_retry:
@@ -124,6 +141,10 @@ Section "Uninstall"
     ${EndIf}
     IntOp $1 $1 + 1
     ${If} $1 < 4
+      ${If} ${FileExists} "$INSTDIR\scripts\uninstall-quiesce.ps1"
+        nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker"'
+        Pop $2
+      ${EndIf}
       ExecWait '"$SYSDIR\cmd.exe" /d /c "timeout /t 3 /nobreak >nul"'
       Goto uninstall_retry
     ${EndIf}
