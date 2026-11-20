@@ -242,6 +242,28 @@ def test_panel_shows_control_status_and_refresh_button(tmp_path):
     assert "飞书接入：已连接" in page
 
 
+def test_status_written_in_the_same_clock_tick_still_counts_as_fresh(tmp_path):
+    """Windows 上 time.time() 只有 ~15.6ms 精度，文件 mtime 却是真实时间戳。
+
+    先写 control.json、紧接着写"已连接"状态时，状态里的 updated 可能比 mtime 小几毫秒；
+    严格比较会把刚写好的状态当成过期，面板卡在"连接中…"。CI 上就是这样偶发红的
+    （main push 44748206712）。这里把 updated 压在 mtime 之下但仍在容差内，必须判成已连接。
+    """
+    layout = _layout(tmp_path)
+    control = Path(layout.data) / "control.json"
+    control.write_text(json.dumps(_control()), encoding="utf-8")
+    mtime = control.stat().st_mtime
+    control_status.write_status(layout, "connected", updated=mtime - 0.02)
+    state = panel.build_state(layout, [], tcp=lambda host, port: False)
+    page = panel.render_html(state)
+    assert "飞书接入：已连接" in page
+
+    # 明显过期的状态（早于 control.json 超过容差）仍然不能冒充"已连接"
+    control_status.write_status(layout, "connected", updated=mtime - 5.0)
+    state = panel.build_state(layout, [], tcp=lambda host, port: False)
+    assert "飞书接入：已连接" not in panel.render_html(state)
+
+
 def test_refresh_without_code_prompts_for_activation_code(tmp_path, monkeypatch):
     layout = _layout(tmp_path)
     monkeypatch.setattr(activation, "install_root", lambda: tmp_path / "install")

@@ -104,6 +104,12 @@ ACCOUNT_STATE_CLASSES = {
 STATUS_CLASS_NAMES = {"st-ok", "st-bad", "st-warn", "st-muted"}
 
 
+# 状态时间与文件 mtime 的比较容差（秒）：Windows 的 time.time() 精度约 15.6ms，
+# 文件时间戳精度远高于此，同一时刻写的两个值会互相"错位"。50ms 足够覆盖，又不至于
+# 把一份明显过期的状态当成新的。
+FRESH_TOLERANCE = 0.05
+
+
 def _env_status_class(status) -> str:
     return ENV_STATUS_CLASSES.get(status, "st-muted")
 
@@ -461,8 +467,11 @@ def control_banner(layout) -> dict:
         updated = float(updated) if updated is not None else None
     except (TypeError, ValueError):
         updated = None
+    # Windows 上 time.time() 只有约 15.6ms 精度，而文件 mtime 用的是 NTFS 的真实时间戳，
+    # 所以"先写 control.json、紧接着写状态"时，状态里的 updated 可能比 mtime 小几个毫秒，
+    # 严格比较会把刚写好的状态判成过期（面板停在"连接中…"）。留一点容差。
     fresh = (updated is not None and valid_mtime is not None
-             and updated >= valid_mtime)
+             and updated + FRESH_TOLERANCE >= valid_mtime)
     if valid_control:
         # A saved binding is not a verified connection.  Only a status written
         # after this exact control.json by a real successful poll may be green.
