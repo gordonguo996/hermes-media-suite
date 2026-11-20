@@ -126,7 +126,7 @@ Section "Uninstall"
   ;    uninstall-quiesce.ps1 认三种进程：程序目录内的、数据目录内的、命令行里带这两个目录的
   ;    （wscript supervisor、用数据目录存 profile 的 Chrome），先杀父进程再杀子进程，跑三轮。
   ${If} ${FileExists} "$INSTDIR\scripts\uninstall-quiesce.ps1"
-    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker"'
+    nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker" -LogFile "$LOCALAPPDATA\HuolongAgent\publish-worker\logs\uninstall-quiesce.log"'
     Pop $0
   ${EndIf}
 
@@ -142,13 +142,28 @@ Section "Uninstall"
     IntOp $1 $1 + 1
     ${If} $1 < 4
       ${If} ${FileExists} "$INSTDIR\scripts\uninstall-quiesce.ps1"
-        nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker"'
+        nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\scripts\uninstall-quiesce.ps1" -Program "$INSTDIR" -DataDir "$LOCALAPPDATA\HuolongAgent\publish-worker" -LogFile "$LOCALAPPDATA\HuolongAgent\publish-worker\logs\uninstall-quiesce.log"'
         Pop $2
       ${EndIf}
       ExecWait '"$SYSDIR\cmd.exe" /d /c "timeout /t 3 /nobreak >nul"'
       Goto uninstall_retry
     ${EndIf}
   uninstall_done:
+  ; 4. 兜底：删完还在（句柄刚释放、或删除过程中又被拉起），留一个延迟清理脚本，
+  ;    卸载器退出后 4 秒再删一次。脚本放 %TEMP%，不占安装目录，也不写数据目录。
+  ${If} ${FileExists} "$INSTDIR\*.*"
+    StrCpy $3 "$TEMP\huolong-uninstall-cleanup.cmd"
+    ClearErrors
+    FileOpen $4 "$3" w
+    IfErrors cleanup_skip
+      FileWrite $4 '@echo off$\r$\n'
+      FileWrite $4 'ping -n 5 127.0.0.1 >nul$\r$\n'
+      FileWrite $4 'rd /s /q "$INSTDIR"$\r$\n'
+      FileClose $4
+      ; start /min：不留一个黑窗口在客户屏幕上停 4 秒；外层 cmd 立刻退出。
+      Exec '"$SYSDIR\cmd.exe" /d /c start /min "" "$3"'
+    cleanup_skip:
+  ${EndIf}
   DeleteRegKey HKCU "${UNKEY}"
   DetailPrint "程序已卸载。账号、授权和日志保留在 $LOCALAPPDATA\HuolongAgent\publish-worker，如需彻底清除请手动删除该文件夹。"
 SectionEnd

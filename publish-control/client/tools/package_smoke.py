@@ -31,6 +31,56 @@ def install(setup):
         fail("静默安装返回 %s" % res.returncode)
 
 
+def diagnose_leftovers(app, data, rest):
+    """说不清为什么删不掉就等于没修。卸载失败时把证据打出来：
+
+    * 卸载器自己的 quiesce 日志（silent 卸载唯一能留痕的地方）
+    * 还活着的候选进程（python/wscript/chrome/agent 之类）
+    * 第一个残留文件到底是"被占用"(winerror 32) 还是"只读/权限"(13/5)
+    * 再手动跑一次 quiesce，看它能不能清干净
+    """
+    qlog = data / "logs" / "uninstall-quiesce.log"
+    print("---- uninstall-quiesce.log ----", file=sys.stderr)
+    if qlog.exists():
+        print(qlog.read_text(encoding="utf-8", errors="replace")[-4000:], file=sys.stderr)
+    else:
+        print("(没有日志：卸载器根本没跑 quiesce 脚本)", file=sys.stderr)
+
+    ps = ("Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+          "Where-Object { $_.Name -match 'python|wscript|cscript|chrome|msedge|agent|publish' } | "
+          "ForEach-Object { '{0}|{1}|{2}|{3}' -f $_.ProcessId, $_.Name, $_.ExecutablePath, $_.CommandLine }")
+    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+    print("---- 候选进程 ----", file=sys.stderr)
+    print(res.stdout.strip() or "(无)", file=sys.stderr)
+
+    first = app / rest[0]
+    print("---- 第一个残留项 %s ----" % first, file=sys.stderr)
+    try:
+        st = first.stat()
+        print("attributes=%#x (readonly=%s dir=%s)"
+              % (st.st_file_attributes, bool(st.st_file_attributes & 1),
+                 first.is_dir()), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - 诊断路径，异常本身也是证据
+        print("stat 失败: %r" % (exc,), file=sys.stderr)
+    if first.is_file():
+        try:
+            first.unlink()
+            print("python 能删掉它：说明不是文件级占用，是目录树/重试逻辑问题", file=sys.stderr)
+        except OSError as exc:
+            print("python 删不掉: winerror=%r %s" % (getattr(exc, "winerror", None), exc), file=sys.stderr)
+
+    script = app / "scripts" / "uninstall-quiesce.ps1"
+    if script.exists():
+        print("---- 手动再跑一次 quiesce ----", file=sys.stderr)
+        res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+                              "-ExecutionPolicy", "Bypass", "-File", str(script),
+                              "-Program", str(app), "-DataDir", str(data), "-Rounds", "3"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace")
+        print(res.stdout[-4000:], res.stderr[-2000:], file=sys.stderr)
+        print("quiesce rc=%s" % res.returncode, file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--setup", type=Path, required=True)
@@ -103,9 +153,14 @@ def main():
     if app.exists():
         rest = sorted(x.relative_to(app).as_posix() for x in app.rglob("*"))
         print("卸载后仍残留 %d 项，前 15 项：%s" % (len(rest), rest[:15]), file=sys.stderr)
+        diagnose_leftovers(app, data, rest)
         fail("卸载后程序目录还在")
     if not keep.exists():
         fail("卸载动了数据目录")
+    qlog = data / "logs" / "uninstall-quiesce.log"
+    print("---- uninstall-quiesce.log（卸载器实际做了什么的唯一证据）----")
+    print(qlog.read_text(encoding="utf-8", errors="replace")[-4000:] if qlog.exists()
+          else "(没有日志：卸载器没跑 quiesce 脚本，删除残留是巧合)")
     print(json.dumps({"ok": True, "version": args.version, "app": str(app)}, ensure_ascii=False))
 
 
