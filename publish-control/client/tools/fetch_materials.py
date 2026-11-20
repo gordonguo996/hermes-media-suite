@@ -134,33 +134,91 @@ def fetch_wheels(lock, out):
     return {"count": len(got)}
 
 
-def _authenticode_signer(path):
-    """Windows 上取签名者；其它系统返回 None。"""
+def _authenticode(path):
+    """Windows 上取签名结论；其它系统返回 None。
+
+    返回 {"status","subject","detail"}，status 直接取 SignatureStatus。调用本身失败时
+    给 ERROR 并把原因带回来——不能让上层只看到一个空的 "INVALID:"。
+    """
     if os.name != "nt":
         return None
-    script = ("$s=Get-AuthenticodeSignature -LiteralPath '%s';"
-              "if($s.Status -eq 'Valid'){$s.SignerCertificate.Subject}else{'INVALID:'+$s.Status}" % path)
-    res = subprocess.run(["powershell", "-NoProfile", "-Command", script],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return res.stdout.strip()
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "try{"
+        "$s=Get-AuthenticodeSignature -LiteralPath $env:HMS_TARGET;"
+        "$subj=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{''};"
+        "@{status=[string]$s.Status;subject=$subj;detail=''} | ConvertTo-Json -Compress"
+        "}catch{"
+        "@{status='ERROR';subject='';detail=$_.Exception.Message} | ConvertTo-Json -Compress"
+        "}"
+    )
+    env = dict(os.environ)
+    env["HMS_TARGET"] = str(path)
+    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", env=env)
+    out = (res.stdout or "").strip()
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue
+            data.setdefault("status", "")
+            data.setdefault("subject", "")
+            data.setdefault("detail", "")
+            if not data["status"]:
+                data["status"] = "ERROR"
+                data["detail"] = data["detail"] or "Get-AuthenticodeSignature 返回空对象"
+            return data
+    return {"status": "ERROR", "subject": "",
+            "detail": ((res.stderr or out or "powershell 无输出").strip())[:400]}
+
+
+# 这些是签名系统给出的确定结论：文件确实没有可接受的签名，不许用哈希兜底。
+_CHROME_DEFINITE_FAIL = {"notsigned", "hashmismatch", "nottrusted"}
+
+
+def chrome_verdict(sig, digest, cfg):
+    """把验签结论翻译成 report 里的 verified 字段；不该放行时抛 MaterialError。
+
+    放行条件（按优先级）：
+      1. 签名有效且签名者是 lock 里要求的 signer（Google LLC）
+      2. 签名系统给不出结论（ERROR/UnknownError 等）且哈希命中 lock 里的已知值
+    其余一律失败——包括签名有效但签名者不对、以及明确的 NotSigned/HashMismatch。
+    """
+    want = cfg.get("signer", "Google LLC")
+    pinned = [cfg["baseline_sha256"]] + list(cfg.get("accepted_sha256") or [])
+    if sig is None:
+        if digest in pinned:
+            return "sha256-pinned(non-windows)"
+        raise MaterialError("非 Windows 无法验证 Chrome 签名，且哈希不在锁定值中：%s" % digest)
+    status = (sig.get("status") or "").strip()
+    subject = sig.get("subject") or ""
+    detail = (sig.get("detail") or "").strip()
+    if status.lower() == "valid":
+        if want in subject:
+            return "authenticode:" + subject
+        raise MaterialError("Chrome 安装包签名者不是 %s：%s" % (want, subject))
+    if status.lower() in _CHROME_DEFINITE_FAIL:
+        raise MaterialError("Chrome 安装包验签失败（%s %s），哈希=%s" % (status, detail, digest))
+    if digest in pinned:
+        print("WARN: Chrome 验签不可用（%s %s），按锁定的哈希放行：%s"
+              % (status, detail, digest), file=sys.stderr)
+        return "sha256-pinned(%s)" % status
+    raise MaterialError("Chrome 验签不可用（%s %s），且哈希不在锁定值中：%s"
+                        % (status, detail, digest))
 
 
 def fetch_chrome(lock, cache, out, unchecked=False):
     cfg = lock["chrome_offline"]
     raw = download(cfg["url"], cache / "ChromeStandaloneSetup64.exe")
     digest = sha256_file(raw)
-    signer = _authenticode_signer(str(raw))
-    if signer is None:
-        if unchecked:
-            verified = "UNCHECKED-non-windows"
-        elif digest != cfg["baseline_sha256"]:
-            raise MaterialError("非 Windows 无法验证 Chrome 签名，且哈希不是基线版本；请在 Windows 上取（或仅调试时加 --chrome-unchecked）。")
-        else:
-            verified = "sha256-baseline"
+    if unchecked:
+        verified = "UNCHECKED-debug"
     else:
-        if "Google LLC" not in signer:
-            raise MaterialError("Chrome 安装包签名不是 Google LLC：" + signer)
-        verified = "authenticode:" + signer
+        verified = chrome_verdict(_authenticode(raw), digest, cfg)
     dest = out / cfg["extract_to"]
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(raw, dest)

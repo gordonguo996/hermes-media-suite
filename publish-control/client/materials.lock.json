@@ -1,4 +1,4 @@
-﻿{
+{
   "schema": "materials-lock/1",
   "note": "每一项离线材料的官方来源与哈希。tools/fetch_materials.py 按此下载、校验并整理成 build_setup.py --materials 需要的目录。基线是已发布的 1.2.218 包（逐项哈希核对过）。",
   "baseline_release": "v1.2.218",
@@ -85,12 +85,16 @@
   "chrome_offline": {
     "url": "https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe",
     "policy": "latest-signed",
-    "note": "该地址永远指向最新版 Chrome，哈希会变。因此不固定哈希：要求文件带 Google LLC 的 Authenticode 签名且签名覆盖整个文件，并把本次实际哈希写进包里的 .sha256 和 verify 文件。",
+    "note": "该地址永远指向最新版 Chrome，哈希会变。验签优先级：Authenticode 必须有效且签名者是 Google LLC；只有 Windows 签名接口给不出结论时才退回哈希比对（baseline_sha256/accepted_sha256），给不出结论又不在锁定值里就直接失败。本次实际哈希仍写进包里的 .sha256 和报告。",
     "baseline_sha256": "d7e898f080258c41996846a423b77bfdab0c14ea1e38afddfdf496c286fc7983",
     "baseline_size": 167031224,
     "signer": "Google LLC",
     "extract_to": "chrome-offline/ChromeStandaloneSetup64.exe",
-    "baseline_note": "baseline_sha256/size 是 11-15 取到的快照，不是当前值（当天直链已变为 173,946,808 字节）。"
+    "baseline_note": "baseline_sha256/size 是 11-15 取到的快照，不是当前值（当天直链已变为 173,946,808 字节）。",
+    "accepted_sha256": [
+      "6f6eff99dc40e4f2f54287920574762ce8cb5de729ee32f182aef62db372a4ac"
+    ],
+    "accepted_note": "accepted_sha256 是 2026-11-20 从同一地址实测取到的滚动版（173,946,808 B），本机核过 PE 头与证书里含 Google LLC。只在签名接口不可用时当兜底，不是首选判据。"
   },
   "wheels": {
     "lock_file": "wheels.lock.json",

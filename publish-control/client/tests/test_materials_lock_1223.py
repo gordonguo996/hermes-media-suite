@@ -53,6 +53,50 @@ class LockFileTests(unittest.TestCase):
         self.assertEqual(self.lock["chrome_offline"]["signer"], "Google LLC")
 
 
+class ChromeVerdictTests(unittest.TestCase):
+    """1.2.223: 签名接口说不出结论时不许静默放行，也不许把报告写成空 INVALID:。"""
+
+    def setUp(self):
+        self.lock = json.loads((CLIENT / "materials.lock.json").read_text(encoding="utf-8-sig"))
+        self.cfg = self.lock["chrome_offline"]
+        self.pinned = self.cfg["accepted_sha256"][0]
+
+    def test_accepted_hashes_are_real_sha256(self):
+        for value in self.cfg["accepted_sha256"]:
+            self.assertRegex(value, SHA)
+
+    def test_valid_google_signature_passes(self):
+        got = fetch_materials.chrome_verdict(
+            {"status": "Valid", "subject": 'CN="Google LLC", O="Google LLC"', "detail": ""},
+            "0" * 64, self.cfg)
+        self.assertTrue(got.startswith("authenticode:"))
+
+    def test_valid_but_wrong_signer_is_refused(self):
+        with self.assertRaises(fetch_materials.MaterialError):
+            fetch_materials.chrome_verdict(
+                {"status": "Valid", "subject": 'CN="Someone Else"', "detail": ""}, self.pinned, self.cfg)
+
+    def test_definite_failures_are_not_rescued_by_hash(self):
+        for status in ("NotSigned", "HashMismatch", "NotTrusted"):
+            with self.assertRaises(fetch_materials.MaterialError):
+                fetch_materials.chrome_verdict(
+                    {"status": status, "subject": "", "detail": ""}, self.pinned, self.cfg)
+
+    def test_indeterminate_status_falls_back_to_pinned_hash_only(self):
+        got = fetch_materials.chrome_verdict(
+            {"status": "ERROR", "subject": "", "detail": "签名接口超时"}, self.pinned, self.cfg)
+        self.assertEqual(got, "sha256-pinned(ERROR)")
+        with self.assertRaises(fetch_materials.MaterialError):
+            fetch_materials.chrome_verdict(
+                {"status": "ERROR", "subject": "", "detail": "签名接口超时"}, "1" * 64, self.cfg)
+
+    def test_non_windows_needs_a_pinned_hash(self):
+        self.assertEqual(fetch_materials.chrome_verdict(None, self.pinned, self.cfg),
+                         "sha256-pinned(non-windows)")
+        with self.assertRaises(fetch_materials.MaterialError):
+            fetch_materials.chrome_verdict(None, "2" * 64, self.cfg)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.nsi = (CLIENT / "installer" / "setup.nsi").read_text(encoding="utf-8-sig")
