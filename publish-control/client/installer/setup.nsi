@@ -172,6 +172,13 @@ Section "Uninstall"
       Exec '"$SYSDIR\cmd.exe" /d /c start /min "" "$3"'
     cleanup_skip:
   ${EndIf}
+  ; 5. 桌面/开始菜单上的启动入口（真机实测：卸载后桌面还留着 漫剧发布助手.vbs）。
+  ;    只删名字以产品名开头的入口和 selfcheck.bat；数据目录、桌面 install-log.txt 和
+  ;    发布素材文件夹是客户的东西，不动。
+  Delete "$DESKTOP\漫剧发布助手*.vbs"
+  Delete "$DESKTOP\漫剧发布助手*.lnk"
+  Delete "$SMPROGRAMS\漫剧发布助手*.lnk"
+  Delete "$DESKTOP\selfcheck.bat"
   DeleteRegKey HKCU "${UNKEY}"
   DetailPrint "程序已卸载。账号、授权和日志保留在 $LOCALAPPDATA\HuolongAgent\publish-worker，如需彻底清除请手动删除该文件夹。"
 SectionEnd

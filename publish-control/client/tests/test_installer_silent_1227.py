@@ -47,3 +47,12 @@ def test_selftest_license_pending_flag(tmp_path, capsys):
                               "--license-pending-ok"]) == 2
     finally:
         selftest.run_selftest = real
+
+
+def test_uninstall_removes_desktop_launchers_but_not_customer_files():
+    text = NSI.read_text(encoding="utf-8-sig")
+    assert 'Delete "$DESKTOP\\漫剧发布助手*.vbs"' in text
+    assert 'Delete "$DESKTOP\\漫剧发布助手*.lnk"' in text
+    uninstall = text.split('Section "Uninstall"')[1]
+    assert 'Delete "$DESKTOP\\install-log.txt"' not in uninstall
+    assert "RMDir /r \"$DESKTOP" not in uninstall
