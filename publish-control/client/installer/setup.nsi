@@ -62,7 +62,15 @@ run_silent:
   ExecWait '"$SYSDIR\cmd.exe" /d /c ""$INSTDIR\bootstrap.bat" --silent"' $0
 ran:
   IfErrors launch_failed
-  IntCmp $0 0 ok failed failed
+  StrCpy $R9 0
+  IntCmp $0 0 ok
+  IntCmp $0 6 pending failed failed
+
+pending:
+  ; 1.2.227: installed and healthy, only the licence/trial is missing: keep the install so the
+  ; customer can open the panel and activate; exit code 6 tells scripts "installed, activation needed".
+  StrCpy $R9 6
+  MessageBox MB_OK|MB_ICONINFORMATION "安装完成，但这台电脑还没有授权。请打开桌面上的「漫剧发布助手」面板，按顶部提示用激活码激活，或把机器码发给服务商。详情见桌面 install-log.txt。" /SD IDOK
 
 ok:
   ; 3. 登记卸载入口（只写当前用户）。
@@ -74,7 +82,7 @@ ok:
   WriteRegDWORD HKCU "${UNKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNKEY}" "NoRepair" 1
   RMDir /r "$INSTDIR.old"
-  SetErrorLevel 0
+  SetErrorLevel $R9
   Goto end
 
 extract_failed:

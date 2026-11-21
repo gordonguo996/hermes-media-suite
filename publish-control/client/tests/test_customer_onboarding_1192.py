@@ -201,7 +201,7 @@ def test_bootstrap_trial_failure_is_explicit_in_console_and_install_log(
     installer = module.Installer(program)
     installer.step_trial()
     text = "\n".join(installer.lines)
-    assert "试用未创建，请联系服务商" in text
+    assert "程序已安装，但这台电脑还不能发布" in text
     assert "人工恢复办法" in text
     assert "查看机器码" in text
     assert "用激活码激活" in text
@@ -209,7 +209,7 @@ def test_bootstrap_trial_failure_is_explicit_in_console_and_install_log(
     assert installer.problems
     log = installer.data / "logs" / "install.log"
     log_text = log.read_text(encoding="utf-8")
-    assert "试用未创建，请联系服务商" in log_text
+    assert "程序已安装，但这台电脑还不能发布" in log_text
     assert "人工恢复办法" in log_text
 
 
