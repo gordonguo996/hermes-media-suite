@@ -43,7 +43,7 @@ Section
     ClearErrors
     Rename "$INSTDIR" "$INSTDIR.old"
     IfErrors 0 +3
-      MessageBox MB_OK|MB_ICONSTOP "旧版本目录无法移动（有程序正在使用其中的文件）。请关闭漫剧发布助手和相关浏览器窗口后重试。目录：$INSTDIR"
+      MessageBox MB_OK|MB_ICONSTOP "旧版本目录无法移动（有程序正在使用其中的文件）。请关闭漫剧发布助手和相关浏览器窗口后重试。目录：$INSTDIR" /SD IDOK
       Goto abort_keep_old
   ${EndIf}
 
@@ -79,14 +79,14 @@ ok:
 
 extract_failed:
   System::Call 'kernel32::GetLastError() i .r1'
-  MessageBox MB_OK|MB_ICONSTOP "文件展开失败（系统错误 $1）。目标：$INSTDIR。请检查剩余空间、写入权限或文件占用后重试。"
+  MessageBox MB_OK|MB_ICONSTOP "文件展开失败（系统错误 $1）。目标：$INSTDIR。请检查剩余空间、写入权限或文件占用后重试。" /SD IDOK
   Goto rollback
 launch_failed:
   System::Call 'kernel32::GetLastError() i .r1'
-  MessageBox MB_OK|MB_ICONSTOP "无法启动安装窗口（系统错误 $1）。程序：$SYSDIR\cmd.exe；入口：$INSTDIR\bootstrap.bat。请联系服务商。"
+  MessageBox MB_OK|MB_ICONSTOP "无法启动安装窗口（系统错误 $1）。程序：$SYSDIR\cmd.exe；入口：$INSTDIR\bootstrap.bat。请联系服务商。" /SD IDOK
   Goto rollback
 failed:
-  MessageBox MB_OK|MB_ICONSTOP "安装未完成（错误码 $0）。请保留安装窗口中的原因并联系服务商。日志位于 $LOCALAPPDATA\HuolongAgent\publish-worker\logs\install.log。"
+  MessageBox MB_OK|MB_ICONSTOP "安装未完成（错误码 $0）。请保留安装窗口中的原因并联系服务商。日志位于 $LOCALAPPDATA\HuolongAgent\publish-worker\logs\install.log。" /SD IDOK
 rollback:
   ; 新装失败：把旧版本放回去，客户不会因为一次失败的升级丢掉能用的版本。
   RMDir /r "$INSTDIR"
