@@ -31,6 +31,28 @@ def install(setup):
         fail("静默安装返回 %s" % res.returncode)
 
 
+
+LAUNCHER_GLOBS = ("漫剧发布助手*.vbs", "漫剧发布助手*.lnk")
+
+
+def launcher_dirs():
+    """桌面 + 开始菜单：安装时应当出现启动入口，卸载后必须消失。"""
+    user = Path(os.environ.get("USERPROFILE", ""))
+    appdata = Path(os.environ.get("APPDATA", ""))
+    return [user / "Desktop",
+            appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs"]
+
+
+def find_launchers():
+    found = []
+    for d in launcher_dirs():
+        if not d.is_dir():
+            continue
+        for pat in LAUNCHER_GLOBS:
+            found.extend(sorted(d.glob(pat)))
+    return found
+
+
 def diagnose_leftovers(app, data, rest):
     """说不清为什么删不掉就等于没修。卸载失败时把证据打出来：
 
@@ -129,6 +151,10 @@ def main():
     keep.parent.mkdir(parents=True, exist_ok=True)
     keep.write_text("x", encoding="utf-8")
     install(args.setup)
+    launchers = find_launchers()
+    if not launchers:
+        fail("安装后桌面/开始菜单没有启动入口")
+    print("安装后启动入口：%s" % [x.name for x in launchers])
     if stale.exists():
         fail("覆盖升级后旧版残留文件还在")
     if not keep.exists():
@@ -155,6 +181,13 @@ def main():
         print("卸载后仍残留 %d 项，前 15 项：%s" % (len(rest), rest[:15]), file=sys.stderr)
         diagnose_leftovers(app, data, rest)
         fail("卸载后程序目录还在")
+    for _ in range(30):
+        if not find_launchers():
+            break
+        time.sleep(1)
+    left = find_launchers()
+    if left:
+        fail("卸载后启动入口还在：%s" % [str(x) for x in left])
     if not keep.exists():
         fail("卸载动了数据目录")
     qlog = data / "logs" / "uninstall-quiesce.log"
