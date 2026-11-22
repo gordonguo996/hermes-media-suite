@@ -153,8 +153,10 @@ def pending_install(setup, version, app, data):
     venv_py = data / ".venv" / "Scripts" / "python.exe"
     if not venv_py.exists():
         fail("退出码 6 之后数据目录的 venv 丢了")
-    selftest = [venv_py, "-u", "-m", "winport.selftest", "--data", data, "--program", app]
-    env = dict(os.environ, PYTHONUTF8="1")
+    selftest = [venv_py, "-u", "-m", "agent.winport.selftest", "--data", data, "--program", app]
+    env = dict(os.environ, PYTHONUTF8="1",
+               PYTHONPATH=str(app / "agent"),
+               PLAYWRIGHT_BROWSERS_PATH=str(app / "browsers"))
     strict = run(selftest, cwd=str(app), env=env, capture_output=True, text=True,
                  encoding="utf-8", errors="replace", timeout=600)
     print(strict.stdout[-1500:], strict.stderr[-800:])
