@@ -191,6 +191,13 @@ jobs:
         run: |
           $v = (Get-Content VERSION -Raw).Trim()
           python tools/package_smoke.py --setup "$env:RUNNER_TEMP\out\setup.exe" --version $v
+      - name: Activation missing keeps the install and exits 6
+        if: github.event_name != 'pull_request' || steps.changed.outputs.run == 'true'
+        working-directory: publish-control/client
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim()
+          python tools/package_smoke.py --setup "$env:RUNNER_TEMP\out\setup.exe" --version $v --expect-pending
       - name: Collect the evidence (materials report + install log)
         if: always()
         shell: pwsh

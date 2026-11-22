@@ -103,16 +103,83 @@ def diagnose_leftovers(app, data, rest):
         print("quiesce rc=%s" % res.returncode, file=sys.stderr)
 
 
+def purge_authorisation(data):
+    """把机器退化成「试用记录没了、也没有正式授权」的客户机状态。"""
+    removed = []
+    for rel in ("system/trial.json", "system/license.json"):
+        f = data / rel
+        if f.exists():
+            f.unlink()
+            removed.append(rel)
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\HuolongAgent\Agent", 0,
+                             winreg.KEY_ALL_ACCESS)
+    except OSError:
+        key = None
+    if key is not None:
+        for name in ("TrialRecord", "TrialSeen"):
+            try:
+                winreg.DeleteValue(key, name)
+                removed.append("HKCU:Agent\\" + name)
+            except OSError:
+                pass
+        winreg.CloseKey(key)
+    print("清除授权痕迹：%s" % removed)
+    if len(removed) < 2:
+        fail("试用记录没清干净（%s），后面的 pending 判定不可信" % removed)
+
+
+def pending_install(setup, version, app, data):
+    """1.2.227 第三处改动的真机验收：授权不可用时必须「保留安装 + 退出码 6」。
+
+    真实场景：试用记录被删/过期、又没有正式授权，客户重装一次。旧安装器在这里
+    要么弹框卡死、要么整体回滚，客户机上表现为「卸了装不回来」。
+    """
+    install(setup)                                  # 第一次：正常装，rc 必须 0
+    purge_authorisation(data)
+    res = run([setup, "/S"], timeout=1800)
+    print("授权缺失时静默安装返回码：%s（期望 6）" % res.returncode)
+    if res.returncode != 6:
+        fail("授权缺失时安装返回 %s，期望 6" % res.returncode)
+    if not (app / "runtime" / "python.exe").exists():
+        fail("退出码 6 之后程序目录被回滚了（应当保留安装）")
+    got = (app / "VERSION").read_text(encoding="utf-8-sig").strip()
+    if got != version:
+        fail("保留的安装 VERSION=%s，期望 %s" % (got, version))
+    if not find_launchers():
+        fail("退出码 6 之后没有启动入口，安装没保留完整")
+    venv_py = data / ".venv" / "Scripts" / "python.exe"
+    if not venv_py.exists():
+        fail("退出码 6 之后数据目录的 venv 丢了")
+    res = run([venv_py, "-m", "agent.winport.cli", "selftest", "--license-pending-ok"],
+              cwd=str(app), env=dict(os.environ, PYTHONUTF8="1"),
+              capture_output=True, text=True, encoding="utf-8", errors="replace",
+              timeout=600)
+    print(res.stdout[-1500:], res.stderr[-800:])
+    if res.returncode != 0:
+        fail("授权 pending 时 selftest 必须放行，实际返回 %s" % res.returncode)
+    print(json.dumps({"ok": True, "version": version, "mode": "activation-pending",
+                      "install_retained": True}, ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--setup", type=Path, required=True)
     ap.add_argument("--version", required=True)
+    ap.add_argument("--expect-pending", action="store_true",
+                    help="只验「授权不可用 → 保留安装 + 退出码 6」这条分支")
     args = ap.parse_args()
     if os.name != "nt":
         fail("只能在 Windows 上运行")
     local = Path(os.environ["LOCALAPPDATA"])
     app = local / "Programs" / "HuolongAgent" / "publish-assistant"
     data = local / "HuolongAgent" / "publish-worker"
+
+    if args.expect_pending:
+        pending_install(args.setup, args.version, app, data)
+        return
 
     install(args.setup)
     py = app / "runtime" / "python.exe"
