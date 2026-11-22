@@ -1313,6 +1313,13 @@ def cmd_instance_check(args):
     return EXIT_OK
 
 
+def cmd_diag_export(args):
+    from . import diag_bundle
+    result = diag_bundle.export(_layout(args))
+    print(json.dumps(result, ensure_ascii=True))
+    return 0 if result.get("ok") else 1
+
+
 def cmd_selftest(args):
     from .selftest import main as selftest_main
     argv = []
@@ -1517,6 +1524,7 @@ def build_parser() -> argparse.ArgumentParser:
     hs.set_defaults(func=cmd_publish_hold_status)
     with_paths(sub.add_parser("env-probe")).set_defaults(func=cmd_env_probe)
     sub.add_parser("fingerprint").set_defaults(func=cmd_fingerprint)
+    with_paths(sub.add_parser("diag-export")).set_defaults(func=cmd_diag_export)
 
     from .named_ops import OPERATIONS as _NAMED_OPS
     for _name in _NAMED_OPS:

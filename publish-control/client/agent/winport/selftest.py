@@ -185,7 +185,9 @@ def _license_light(layout: Layout, static):
             return STATUS_WARN, (
                 "未导入正式授权（新客户包正常状态）；试用授权有效，剩余 %s 天。%s"
                 % (state.get("days_left"), _activation_hint()))
-        detail = ("；".join(state.get("reasons") or [])
+        # 1.2.227: say WHY there is no trial and what to do (same text the panel shows).
+        notices = state.get("notices") or []
+        detail = ("；".join(notices) or "；".join(state.get("reasons") or [])
                   or state.get("text") or "试用记录不存在或已失效").rstrip("。")
         return STATUS_RED, (
             "未找到正式授权（license.json），且试用未创建或已失效：%s。%s"
@@ -307,6 +309,9 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="winport.selftest")
     parser.add_argument("--data")
     parser.add_argument("--program")
+    parser.add_argument("--license-pending-ok", action="store_true",
+                        help="installer use: a missing licence/trial is the ONLY red -> exit 0 "
+                             "(the product is installed; the panel asks for activation)")
     parser.add_argument("--require-green", action="store_true",
                         help="treat WARN as failure too")
     args = parser.parse_args(argv)
@@ -314,6 +319,10 @@ def main(argv=None) -> int:
                     data=Path(args.data) if args.data else None)
     result = run_selftest(layout)
     print_selftest(result)
+    if args.license_pending_ok and result["red"] == ["license"]:
+        print("授权待办：除授权外自检全部通过。程序已安装，请在面板里激活（见上面的授权提示）。",
+              flush=True)
+        return EXIT_OK
     if args.require_green:
         warns = [k for k, (s, _) in result["checks"].items() if s == STATUS_WARN]
         if warns:

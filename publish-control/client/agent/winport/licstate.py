@@ -239,10 +239,13 @@ def unified_license_state(layout, *, now=None, account_id=None,
             out["text"] = "授权被拒绝（%s）：%s" % (
                 out["label"], out["reasons"][-1])
             return out
-        out["reasons"].append(
-            "未找到授权文件（license.json），且没有可继续的试用记录：拒绝发布。")
-        out["notices"].append("请双击桌面「导入授权」导入服务商签发的 license.json。")
-        out["text"] = "未激活且试用不可用，新增发布暂停"
+        from .license import trial_unavailable_reason
+        code, why = trial_unavailable_reason(layout, now=now,
+                                             fingerprint_info=fingerprint_info)
+        out["trial_unavailable"] = code
+        out["reasons"].append("未找到授权文件（license.json），且没有可继续的试用记录：拒绝发布。")
+        out["notices"].append(why)
+        out["text"] = "未激活且试用不可用，新增发布暂停。" + why
         out["level"] = "warn"
         return out
     if read["kind"] != "ok":

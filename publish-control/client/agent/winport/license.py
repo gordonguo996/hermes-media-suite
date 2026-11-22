@@ -1158,3 +1158,41 @@ def trial_state(layout, now=None, *, account_id=None, fingerprint_info=None,
         "license_path": str(_trial_path(layout)),
         "source": "trial",
     }
+
+
+def trial_unavailable_reason(layout, now=None, *, fingerprint_info=None):
+    """Why no trial is running, in words the customer can act on (1.2.227).
+
+    ``trial_state`` returns None for several different reasons; the panel used
+    to say one thing for all of them.  Returns ``(code, text)``; the trial is
+    never restarted by this call.
+    """
+    from .fingerprint import fingerprint
+
+    now = _utc(now)
+    fp = fingerprint_info or fingerprint()
+    machine_id = str(fp.get("machine_id") or "")
+    try:
+        state = _collect_trial_records(layout, machine_id, now)
+    except Exception:  # noqa: BLE001 - diagnosis must not raise into the panel
+        return ("unreadable", "试用记录读取失败；为防绕过试用期不会重新开始试用。请联系服务商。")
+    record = state.get("record")
+    if state.get("tombstone"):
+        return ("had_licence",
+                "这台电脑已经用过正式授权，授权文件现在找不到，所以不再提供试用。"
+                "请双击桌面「导入授权」重新导入服务商给的授权，或联系服务商。")
+    if state.get("conflict"):
+        return ("conflict",
+                "试用记录前后不一致，为防绕过试用期已暂停发布，不会自动重新开始试用。请联系服务商。")
+    if state.get("corrupt"):
+        return ("corrupt",
+                "试用记录读取异常（可能被安全软件拦截或系统迁移过），不会自动重新开始试用。请联系服务商。")
+    if record is None:
+        return ("none", "这台电脑还没有激活，也没有试用记录。请点「重试自动授权」，或输入服务商给的激活码。")
+    try:
+        left = (parse_time(record["issued"]) + timedelta(days=TRIAL_DAYS) - now).total_seconds() / 86400.0
+    except (ValueError, TypeError, AttributeError, KeyError):
+        return ("corrupt", "试用记录读取异常，不会自动重新开始试用。请联系服务商。")
+    if left <= 0:
+        return ("expired", "试用已到期。请输入服务商给的激活码，或导入正式授权。")
+    return ("unknown", "试用暂时不可用，请联系服务商。")

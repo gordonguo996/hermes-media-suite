@@ -456,7 +456,7 @@ void (globalThis.__testResult = (async () => {
             "__ACTIVATE_RESPONSE__",
             json.dumps(activate_response, ensure_ascii=False))
     completed = subprocess.run(
-        ["node", "-e", harness], input=code, text=True,
+        ["node", "-e", harness], input=code, text=True, encoding="utf-8",
         capture_output=True, timeout=60)  # 冷启动 node 在 CI 上偶尔超过 20s
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)

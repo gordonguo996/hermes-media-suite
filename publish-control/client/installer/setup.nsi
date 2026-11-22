@@ -43,7 +43,7 @@ Section
     ClearErrors
     Rename "$INSTDIR" "$INSTDIR.old"
     IfErrors 0 +3
-      MessageBox MB_OK|MB_ICONSTOP "旧版本目录无法移动（有程序正在使用其中的文件）。请关闭漫剧发布助手和相关浏览器窗口后重试。目录：$INSTDIR"
+      MessageBox MB_OK|MB_ICONSTOP "旧版本目录无法移动（有程序正在使用其中的文件）。请关闭漫剧发布助手和相关浏览器窗口后重试。目录：$INSTDIR" /SD IDOK
       Goto abort_keep_old
   ${EndIf}
 
@@ -62,7 +62,15 @@ run_silent:
   ExecWait '"$SYSDIR\cmd.exe" /d /c ""$INSTDIR\bootstrap.bat" --silent"' $0
 ran:
   IfErrors launch_failed
-  IntCmp $0 0 ok failed failed
+  StrCpy $R9 0
+  IntCmp $0 0 ok
+  IntCmp $0 6 pending failed failed
+
+pending:
+  ; 1.2.227: installed and healthy, only the licence/trial is missing: keep the install so the
+  ; customer can open the panel and activate; exit code 6 tells scripts "installed, activation needed".
+  StrCpy $R9 6
+  MessageBox MB_OK|MB_ICONINFORMATION "安装完成，但这台电脑还没有授权。请打开桌面上的「漫剧发布助手」面板，按顶部提示用激活码激活，或把机器码发给服务商。详情见桌面 install-log.txt。" /SD IDOK
 
 ok:
   ; 3. 登记卸载入口（只写当前用户）。
@@ -74,19 +82,19 @@ ok:
   WriteRegDWORD HKCU "${UNKEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNKEY}" "NoRepair" 1
   RMDir /r "$INSTDIR.old"
-  SetErrorLevel 0
+  SetErrorLevel $R9
   Goto end
 
 extract_failed:
   System::Call 'kernel32::GetLastError() i .r1'
-  MessageBox MB_OK|MB_ICONSTOP "文件展开失败（系统错误 $1）。目标：$INSTDIR。请检查剩余空间、写入权限或文件占用后重试。"
+  MessageBox MB_OK|MB_ICONSTOP "文件展开失败（系统错误 $1）。目标：$INSTDIR。请检查剩余空间、写入权限或文件占用后重试。" /SD IDOK
   Goto rollback
 launch_failed:
   System::Call 'kernel32::GetLastError() i .r1'
-  MessageBox MB_OK|MB_ICONSTOP "无法启动安装窗口（系统错误 $1）。程序：$SYSDIR\cmd.exe；入口：$INSTDIR\bootstrap.bat。请联系服务商。"
+  MessageBox MB_OK|MB_ICONSTOP "无法启动安装窗口（系统错误 $1）。程序：$SYSDIR\cmd.exe；入口：$INSTDIR\bootstrap.bat。请联系服务商。" /SD IDOK
   Goto rollback
 failed:
-  MessageBox MB_OK|MB_ICONSTOP "安装未完成（错误码 $0）。请保留安装窗口中的原因并联系服务商。日志位于 $LOCALAPPDATA\HuolongAgent\publish-worker\logs\install.log。"
+  MessageBox MB_OK|MB_ICONSTOP "安装未完成（错误码 $0）。请保留安装窗口中的原因并联系服务商。日志位于 $LOCALAPPDATA\HuolongAgent\publish-worker\logs\install.log。" /SD IDOK
 rollback:
   ; 新装失败：把旧版本放回去，客户不会因为一次失败的升级丢掉能用的版本。
   RMDir /r "$INSTDIR"
@@ -164,6 +172,13 @@ Section "Uninstall"
       Exec '"$SYSDIR\cmd.exe" /d /c start /min "" "$3"'
     cleanup_skip:
   ${EndIf}
+  ; 5. 桌面/开始菜单上的启动入口（真机实测：卸载后桌面还留着 漫剧发布助手.vbs）。
+  ;    只删名字以产品名开头的入口和 selfcheck.bat；数据目录、桌面 install-log.txt 和
+  ;    发布素材文件夹是客户的东西，不动。
+  Delete "$DESKTOP\漫剧发布助手*.vbs"
+  Delete "$DESKTOP\漫剧发布助手*.lnk"
+  Delete "$SMPROGRAMS\漫剧发布助手*.lnk"
+  Delete "$DESKTOP\selfcheck.bat"
   DeleteRegKey HKCU "${UNKEY}"
   DetailPrint "程序已卸载。账号、授权和日志保留在 $LOCALAPPDATA\HuolongAgent\publish-worker，如需彻底清除请手动删除该文件夹。"
 SectionEnd

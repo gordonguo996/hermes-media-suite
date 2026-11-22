@@ -86,15 +86,15 @@
     "url": "https://dl.google.com/chrome/install/ChromeStandaloneSetup64.exe",
     "policy": "latest-signed",
     "note": "该地址永远指向最新版 Chrome，哈希会变。验签优先级：Authenticode 必须有效且签名者是 Google LLC；只有 Windows 签名接口给不出结论时才退回哈希比对（baseline_sha256/accepted_sha256），给不出结论又不在锁定值里就直接失败。本次实际哈希仍写进包里的 .sha256 和报告。",
-    "baseline_sha256": "d7e898f080258c41996846a423b77bfdab0c14ea1e38afddfdf496c286fc7983",
-    "baseline_size": 167031224,
+    "baseline_sha256": "6f6eff99dc40e4f2f54287920574762ce8cb5de729ee32f182aef62db372a4ac",
+    "baseline_size": 173946808,
     "signer": "Google LLC",
     "extract_to": "chrome-offline/ChromeStandaloneSetup64.exe",
-    "baseline_note": "baseline_sha256/size 是 11-15 取到的快照，不是当前值（当天直链已变为 173,946,808 字节）。",
+    "baseline_note": "baseline 是 2026-11-21 从同一直链实测的当前版（173,946,808 字节，etag 71d5102）。旧快照 d7e898f0…（167,031,224 字节，11-15）已淘汰。直链会滚动，真正的判据仍是 Authenticode 签名者 Google LLC。",
     "accepted_sha256": [
-      "6f6eff99dc40e4f2f54287920574762ce8cb5de729ee32f182aef62db372a4ac"
+      "d7e898f080258c41996846a423b77bfdab0c14ea1e38afddfdf496c286fc7983"
     ],
-    "accepted_note": "accepted_sha256 是 2026-11-20 从同一地址实测取到的滚动版（173,946,808 B），本机核过 PE 头与证书里含 Google LLC。只在签名接口不可用时当兜底，不是首选判据。"
+    "accepted_note": "accepted_sha256 仅保留上一代快照（11-15），签名接口不可用时的兜底，不是首选判据。"
   },
   "wheels": {
     "lock_file": "wheels.lock.json",

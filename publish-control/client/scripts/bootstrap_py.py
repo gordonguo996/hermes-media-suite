@@ -1183,6 +1183,11 @@ def _task_target_from_xml(xml: str):
     return bare[-1] if bare else None
 
 
+# 1.2.227: everything is installed and healthy, only the licence/trial is missing.
+# The setup program treats this as a successful install and tells the customer to activate.
+EXIT_ACTIVATION_PENDING = 6
+
+
 class Installer:
     def __init__(self, program: Path) -> None:
         self.program = program
@@ -2456,7 +2461,10 @@ class Installer:
 
     def step_selftest(self) -> None:
         self.log("[4/6] self-test")
+        # 1.2.227: a missing licence/trial alone must not undo the install -- the
+        # customer needs the panel to enter an activation code.
         code = self.run([self.venv_py, "-u", "-m", "winport.selftest",
+                         "--license-pending-ok",
                          "--data", self.data, "--program", self.program],
                         env=self.python_env())
         if code != 0:
@@ -2527,9 +2535,10 @@ class Installer:
 
         self.license_handover_ok = False
         if not self.license_problem_reported:
-            detail = ("；".join(state.get("reasons") or [])
+            detail = ("；".join(state.get("notices") or [])
+                      or "；".join(state.get("reasons") or [])
                       or state.get("text") or "授权校验未通过")
-            message = "试用未创建，请联系服务商。原因：%s" % detail
+            message = "程序已安装，但这台电脑还不能发布。原因：%s" % detail
             self.log(message)
             self.log(
                 "人工恢复办法：打开面板顶部「查看机器码」取得机器码"
@@ -2581,9 +2590,10 @@ class Installer:
         handover_ok = self.step_license_handover()
         self.step_handover_check()
         if not handover_ok or self.problems:
-            self.log("[6/6] installation incomplete: %d authorization problem(s); "
-                     "see the recovery instructions above" % len(self.problems))
-            return 5
+            self.log("[6/6] installed, activation needed: %d authorization problem(s); "
+                     "open the panel and follow the recovery instructions above"
+                     % len(self.problems))
+            return EXIT_ACTIVATION_PENDING
         self.log("[6/6] installation complete")
         return 0
 
@@ -2615,7 +2625,11 @@ def main(argv=None) -> int:
         print("Installation incomplete. Please send install-log.txt on your Desktop to support.")
         return 5
     inst.flush_desktop_copy()
-    if code != 0:
+    if code == EXIT_ACTIVATION_PENDING:
+        print("Installed. This computer still needs activation: open the panel and "
+              "follow the instructions at the top, or send install-log.txt on your "
+              "Desktop to support.")
+    elif code != 0:
         print("Installation incomplete. Please send install-log.txt on your "
               "Desktop to support.")
     else:

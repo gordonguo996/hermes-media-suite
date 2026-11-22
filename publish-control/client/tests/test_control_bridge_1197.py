@@ -416,7 +416,7 @@ def _run_panel_js(page, expression):
              "result: document.getElementById('license-result').textContent, "
              "urls: urls}; })());")
     completed = subprocess.run(
-        ["node", "-e", _NODE_HARNESS], input=code, text=True,
+        ["node", "-e", _NODE_HARNESS], input=code, text=True, encoding="utf-8",
         capture_output=True, timeout=60)  # 冷启动 node 在 CI 上偶尔超过 20s
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout)
